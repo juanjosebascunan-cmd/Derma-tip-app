@@ -12,6 +12,12 @@ import {
   updateReminder,
 } from './api'
 import './App.css'
+import flareFigureA from './assets/flare-figure-a.png'
+import flareFigureB from './assets/flare-figure-b.png'
+import bellIcon from './assets/bell-icon.svg'
+import brandMark from './assets/brand-mark.svg'
+import profileAvatar from './assets/profile-avatar.png'
+import skincarePortrait from './assets/skincare-portrait.png'
 import type { CurrentUser, EntryDraft, LogEntry, Page, Patient, Reminder } from './types'
 
 type PatientForm = {
@@ -362,15 +368,16 @@ function App() {
         <header className="topbar">
           <div className="brand">
             <div className="avatar" aria-hidden="true">
-              D
+              <img alt="" src={brandMark} />
             </div>
-            <div>
+            <div className="brand-copy">
+              <span className="brand-mark">D&amp;T</span>
               <p className="eyebrow">Tu companera de seguimiento</p>
               <h1>DermaTips</h1>
             </div>
           </div>
           <button className="icon-button" type="button" aria-label="Notificaciones">
-            <span />
+            <img alt="" src={bellIcon} />
           </button>
         </header>
 
@@ -409,20 +416,28 @@ function App() {
               </section>
 
               <section className="hero-card">
-                <p className="eyebrow">Estado actual</p>
-                <div className="hero-heading">
-                  <div>
+                <div className="hero-illustration">
+                  <img alt="Rutina de cuidado facial" src={skincarePortrait} />
+                </div>
+                <div className="hero-copy">
+                  <p className="eyebrow">Estado actual</p>
+                  <div className="hero-heading">
                     <h2>
                       {latestEntry?.status === 'Brote' ? 'Atencion suave hoy' : 'Tu piel se ve calmada'}
                     </h2>
-                    <p>
-                      {latestEntry?.status === 'Brote'
-                        ? 'Detectamos actividad reciente. Registra sintomas para encontrar patrones.'
-                        : `Hoy tienes ${todaysEntries.length} registro${todaysEntries.length === 1 ? '' : 's'} y varios dias con mejor control.`}
-                    </p>
+                    <div className="status-badge" aria-hidden="true">
+                      {latestEntry?.status === 'Brote' ? ':(' : ':)'}
+                    </div>
                   </div>
-                  <div className="status-badge" aria-hidden="true">
-                    {latestEntry?.status === 'Brote' ? ':(' : ':)'}
+                  <p>
+                    {latestEntry?.status === 'Brote'
+                      ? 'Detectamos actividad reciente. Registra sintomas para encontrar patrones.'
+                      : `Hoy tienes ${todaysEntries.length} registro${todaysEntries.length === 1 ? '' : 's'} y varios dias con mejor control.`}
+                  </p>
+                  <div className="hero-soft-points">
+                    <span>Calma</span>
+                    <span>Rutina</span>
+                    <span>Seguimiento</span>
                   </div>
                 </div>
               </section>
@@ -833,6 +848,9 @@ function App() {
                     <small>dias registrados este mes</small>
                   </div>
                 </div>
+                <div className="history-visual">
+                  <img alt="Ilustracion sobre brotes en la piel" src={flareFigureA} />
+                </div>
               </article>
 
               <article className="panel">
@@ -949,6 +967,19 @@ function App() {
                   <div>
                     <p className="eyebrow">Paciente activo</p>
                     <h3>{patient?.fullName ?? 'Sin paciente'}</h3>
+                  </div>
+                </div>
+                <div className="profile-hero">
+                  <div className="profile-hero-copy">
+                    <p className="eyebrow">Cuidado diario</p>
+                    <h3>Una rutina amable tambien es parte del tratamiento</h3>
+                    <p>
+                      Usa este espacio para registrar avances, entender detonantes y darle contexto a
+                      tu evolucion.
+                    </p>
+                  </div>
+                  <div className="profile-hero-art">
+                    <img alt="Ilustracion de seguimiento de brotes" src={flareFigureB} />
                   </div>
                 </div>
                 <div className="profile-stack">
@@ -1165,6 +1196,9 @@ function App() {
             type="button"
             onClick={() => setPage('profile')}
           >
+            <span className="nav-profile-icon" aria-hidden="true">
+              <img alt="" src={profileAvatar} />
+            </span>
             Perfil
           </button>
         </nav>
