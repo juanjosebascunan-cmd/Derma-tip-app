@@ -41,6 +41,9 @@ Variables esperadas en Render:
 - `DEBUG=false`
 - `DATABASE_URL`
 - `FRONTEND_ORIGINS=https://derma-tip-app.vercel.app`
+- `DJANGO_SUPERUSER_USERNAME=tu_usuario`
+- `DJANGO_SUPERUSER_PASSWORD=tu_password`
+- `DJANGO_SUPERUSER_EMAIL=tu_correo@ejemplo.com`
 
 Comandos:
 
@@ -51,3 +54,4 @@ Comandos:
 
 - En Render gratis, el servicio web entra en reposo tras inactividad.
 - La base de datos Postgres gratis sirve para demo, pero Render la limita en tiempo.
+- Si no tienes acceso a Shell en Render, el deploy crea o actualiza el superusuario usando las variables `DJANGO_SUPERUSER_*`.
