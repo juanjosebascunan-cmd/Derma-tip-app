@@ -1,0 +1,39 @@
+{
+  "name": "dermatip-app",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:client": "vite",
+    "dev:server": ".\\.venv\\Scripts\\python backend\\manage.py runserver 127.0.0.1:8000",
+    "dev:server:express": "node --watch server/index.js",
+    "build": "tsc -b && vite build",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "server": ".\\.venv\\Scripts\\python backend\\manage.py runserver 127.0.0.1:8000",
+    "server:express": "node server/index.js",
+    "django:migrate": ".\\.venv\\Scripts\\python backend\\manage.py migrate",
+    "django:makemigrations": ".\\.venv\\Scripts\\python backend\\manage.py makemigrations"
+  },
+  "dependencies": {
+    "concurrently": "^10.0.3",
+    "express": "^5.2.1",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.12.3",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "eslint": "^10.3.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.6.0",
+    "typescript": "~6.0.2",
+    "typescript-eslint": "^8.59.2",
+    "vite": "^8.0.12"
+  }
+}

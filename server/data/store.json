@@ -1,0 +1,90 @@
+{
+  "reminders": [
+    {
+      "id": "water",
+      "title": "Hidratacion",
+      "detail": "Tomar 250 ml de agua ahora",
+      "done": true
+    },
+    {
+      "id": "cream",
+      "title": "Aplicar crema",
+      "detail": "Rutina de mediodia",
+      "done": true
+    },
+    {
+      "id": "soap",
+      "title": "Limpieza suave",
+      "detail": "Usar producto sin fragancia por la noche",
+      "done": false
+    }
+  ],
+  "entries": [
+    {
+      "id": "log-1",
+      "title": "Enrojecimiento leve en mejillas",
+      "date": "2026-06-15",
+      "status": "Recuperacion",
+      "severity": 2,
+      "pain": 1,
+      "symptoms": [
+        "Enrojecimiento",
+        "Picor"
+      ],
+      "triggers": [
+        "Estres"
+      ],
+      "notes": "Mejoro despues de descansar y aplicar crema barrera."
+    },
+    {
+      "id": "log-2",
+      "title": "Brote nocturno moderado",
+      "date": "2026-06-13",
+      "status": "Brote",
+      "severity": 4,
+      "pain": 3,
+      "symptoms": [
+        "Picor",
+        "Inflamacion",
+        "Resequedad"
+      ],
+      "triggers": [
+        "Clima",
+        "Falta de sueno"
+      ],
+      "notes": "Hubo calor durante la tarde y dormi mal."
+    },
+    {
+      "id": "log-3",
+      "title": "Dia estable",
+      "date": "2026-06-10",
+      "status": "Estable",
+      "severity": 1,
+      "pain": 0,
+      "symptoms": [
+        "Resequedad"
+      ],
+      "triggers": [
+        "Nuevo producto"
+      ],
+      "notes": "Sin crisis, solo resequedad ligera en la frente."
+    },
+    {
+      "id": "log-4",
+      "title": "Rosacea activa despues de almuerzo",
+      "date": "2026-06-07",
+      "status": "Brote",
+      "severity": 5,
+      "pain": 2,
+      "symptoms": [
+        "Ardor",
+        "Enrojecimiento"
+      ],
+      "triggers": [
+        "Dieta",
+        "Estres"
+      ],
+      "notes": "Senti calor en mejillas y ardor durante una hora."
+    }
+  ]
+}
