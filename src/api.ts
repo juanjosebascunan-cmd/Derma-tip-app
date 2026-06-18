@@ -1,4 +1,11 @@
-import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth'
+import {
+  GoogleAuthProvider,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signInWithPopup,
+  signOut,
+  type User,
+} from 'firebase/auth'
 import {
   addDoc,
   collection,
@@ -10,6 +17,7 @@ import {
   writeBatch,
 } from 'firebase/firestore'
 import { auth, db, isFirebaseConfigured } from './firebase'
+import { uploadImageToGoogleDrive } from './googleDrive'
 import type { AppStore, CurrentUser, EntryDraft, LogEntry, Patient, Reminder } from './types'
 
 const guestPatient: Patient = {
@@ -64,6 +72,9 @@ const guestEntries: LogEntry[] = [
   },
 ]
 
+const LEGACY_DEFAULT_PROFILE_NOTE = 'Perfil inicial creado automaticamente en Firebase.'
+const DEFAULT_PROFILE_NOTE = 'Espacio personal para registrar sintomas, rutinas y observaciones importantes.'
+
 function createNumericId() {
   return Date.now() + Math.floor(Math.random() * 10000)
 }
@@ -101,6 +112,30 @@ function toCurrentUser(user: User): CurrentUser {
     isStaff: false,
     isSuperuser: false,
   }
+}
+
+function toTitleCase(value: string) {
+  return value
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ')
+}
+
+function getUserProfileName(user: User) {
+  const displayName = user.displayName?.trim()
+
+  if (displayName) {
+    return displayName
+  }
+
+  const emailName = user.email?.split('@')[0]?.replace(/[._-]+/g, ' ').trim()
+
+  if (emailName) {
+    return toTitleCase(emailName)
+  }
+
+  return 'Mi seguimiento'
 }
 
 function buildGuestStore(patientId?: number): AppStore {
@@ -173,6 +208,9 @@ function sanitizeEntry(data: Record<string, unknown>): LogEntry {
   const severity = Number(data.severity ?? 0)
   const symptoms = Array.isArray(data.symptoms) ? data.symptoms.map(String) : []
   const triggers = Array.isArray(data.triggers) ? data.triggers.map(String) : []
+  const photoDataUrl = typeof data.photoDataUrl === 'string' ? data.photoDataUrl : undefined
+  const photoDriveFileId = typeof data.photoDriveFileId === 'string' ? data.photoDriveFileId : undefined
+  const photoDriveWebViewLink = typeof data.photoDriveWebViewLink === 'string' ? data.photoDriveWebViewLink : undefined
 
   return {
     id: Number(data.id),
@@ -185,6 +223,9 @@ function sanitizeEntry(data: Record<string, unknown>): LogEntry {
     symptoms,
     triggers,
     notes: String(data.notes ?? ''),
+    photoDataUrl,
+    photoDriveFileId,
+    photoDriveWebViewLink,
   }
 }
 
@@ -206,6 +247,38 @@ async function listPatients(ownerId: string) {
   ensureFirebaseConfigured()
   const snapshot = await getDocs(query(collection(db!, 'patients'), where('ownerId', '==', ownerId)))
   return snapshot.docs.map((item) => sanitizePatient(item.data())).sort((left, right) => left.id - right.id)
+}
+
+async function syncDefaultPatientProfile(user: User, patients: Patient[]) {
+  const autoCreatedPatient = patients.find((patient) => patient.notes === LEGACY_DEFAULT_PROFILE_NOTE)
+
+  if (!autoCreatedPatient) {
+    return patients
+  }
+
+  const nextName = getUserProfileName(user)
+  const shouldRename = autoCreatedPatient.fullName === 'Mi seguimiento' && nextName !== autoCreatedPatient.fullName
+
+  const patientDoc = await findSingleDocument('patients', 'id', autoCreatedPatient.id, user.uid)
+
+  if (!patientDoc) {
+    return patients
+  }
+
+  await updateDoc(doc(db!, 'patients', patientDoc.id), {
+    ...(shouldRename ? { fullName: nextName } : {}),
+    notes: DEFAULT_PROFILE_NOTE,
+  })
+
+  return patients.map((patient) =>
+    patient.id === autoCreatedPatient.id
+      ? {
+          ...patient,
+          fullName: shouldRename ? nextName : patient.fullName,
+          notes: DEFAULT_PROFILE_NOTE,
+        }
+      : patient,
+  )
 }
 
 async function listReminders(ownerId: string, patientId: number) {
@@ -274,17 +347,19 @@ export async function getBootstrapData(patientId?: number) {
   }
 
   const ownerId = auth.currentUser.uid
-  const patients = await listPatients(ownerId)
+  let patients = await listPatients(ownerId)
 
   if (patients.length === 0) {
     const seeded = await createPatient({
-      fullName: auth.currentUser.displayName || 'Mi seguimiento',
+      fullName: getUserProfileName(auth.currentUser),
       condition: 'Rosacea / dermatitis',
-      notes: 'Perfil inicial creado automaticamente en Firebase.',
+      notes: DEFAULT_PROFILE_NOTE,
     })
 
     return getBootstrapData(seeded.id)
   }
+
+  patients = await syncDefaultPatientProfile(auth.currentUser, patients)
 
   const activePatient = patients.find((item) => item.id === patientId) ?? patients[0]
   const [reminders, entries] = await Promise.all([
@@ -303,8 +378,25 @@ export async function getBootstrapData(patientId?: number) {
 
 export async function createEntry(entry: EntryDraft) {
   const user = await requireUser()
+  const entryId = createNumericId()
+  let photoDataUrl: string | undefined
+  let photoDriveFileId: string | undefined
+  let photoDriveWebViewLink: string | undefined
+
+  if (entry.photoDataUrl) {
+    const extension = entry.photoDataUrl.startsWith('data:image/png') ? 'png' : 'jpg'
+    const uploadedPhoto = await uploadImageToGoogleDrive({
+      dataUrl: entry.photoDataUrl,
+      fileName: `dermatips-${user.uid}-${entry.patientId}-${entryId}.${extension}`,
+    })
+
+    photoDataUrl = entry.photoDataUrl
+    photoDriveFileId = uploadedPhoto.fileId
+    photoDriveWebViewLink = uploadedPhoto.webViewLink
+  }
+
   const payload: LogEntry = {
-    id: createNumericId(),
+    id: entryId,
     patientId: entry.patientId,
     title: buildEntryTitle(entry.symptoms, entry.severity),
     date: entry.date,
@@ -314,13 +406,30 @@ export async function createEntry(entry: EntryDraft) {
     symptoms: entry.symptoms,
     triggers: entry.triggers,
     notes: entry.notes,
+    photoDataUrl,
+    photoDriveFileId,
+    photoDriveWebViewLink,
   }
 
-  await addDoc(collection(db!, 'entries'), {
-    ...payload,
+  const firestorePayload = {
+    id: payload.id,
+    patientId: payload.patientId,
+    title: payload.title,
+    date: payload.date,
+    status: payload.status,
+    severity: payload.severity,
+    pain: payload.pain,
+    symptoms: payload.symptoms,
+    triggers: payload.triggers,
+    notes: payload.notes,
+    ...(payload.photoDataUrl ? { photoDataUrl: payload.photoDataUrl } : {}),
+    ...(payload.photoDriveFileId ? { photoDriveFileId: payload.photoDriveFileId } : {}),
+    ...(payload.photoDriveWebViewLink ? { photoDriveWebViewLink: payload.photoDriveWebViewLink } : {}),
     ownerId: user.uid,
     createdAt: Date.now(),
-  })
+  }
+
+  await addDoc(collection(db!, 'entries'), firestorePayload)
 
   return payload
 }
@@ -406,6 +515,13 @@ export async function updateReminder(reminderId: number, done: boolean) {
 export async function login(payload: { username: string; password: string }) {
   ensureFirebaseConfigured()
   await signInWithEmailAndPassword(auth!, payload.username.trim(), payload.password)
+  return { currentUser: toCurrentUser(auth!.currentUser!) }
+}
+
+export async function loginWithGoogle() {
+  ensureFirebaseConfigured()
+  const provider = new GoogleAuthProvider()
+  await signInWithPopup(auth!, provider)
   return { currentUser: toCurrentUser(auth!.currentUser!) }
 }
 

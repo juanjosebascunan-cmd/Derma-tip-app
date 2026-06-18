@@ -1,4 +1,4 @@
-import { startTransition, type FormEvent } from 'react'
+import { startTransition, type ChangeEvent, type FormEvent } from 'react'
 import { useEffect, useState } from 'react'
 import {
   createEntry,
@@ -7,6 +7,7 @@ import {
   downloadPatientExport,
   getBootstrapData,
   login,
+  loginWithGoogle,
   logout,
   updatePatient,
   updateReminder,
@@ -31,20 +32,63 @@ type AuthForm = {
   password: string
 }
 
-const appToday = new Date('2026-06-15T12:00:00')
-const calendarMonth = new Date(appToday.getFullYear(), appToday.getMonth(), 1)
+type NotificationItem = {
+  id: string
+  title: string
+  body: string
+  page: Page
+  date?: string
+}
 
-const triggerOptions = ['Estres', 'Clima', 'Nuevo producto', 'Alergenos', 'Dieta', 'Falta de sueno']
+type SummaryBar = {
+  date: string
+  dayLabel: string
+  events: number
+  severity: number
+  value: number
+}
+
+type PredictiveInsight = {
+  level: 'low' | 'medium' | 'high'
+  title: string
+  body: string
+  reason: string
+  actionLabel: string
+  actionPage: Page
+}
+
+type TriggerSignal = {
+  key: string
+  label: string
+}
+
+const CHILE_TIME_ZONE = 'America/Santiago'
+
+const triggerOptions = [
+  'Estres',
+  'Clima',
+  'Nuevo producto',
+  'Alergenos',
+  'Dieta',
+  'Falta de sueno',
+  'Alcohol',
+  'Comida',
+  'Bebida',
+  'Cafeina',
+  'Picante',
+]
 const symptomOptions = ['Picor', 'Enrojecimiento', 'Ardor', 'Resequedad', 'Descamacion', 'Inflamacion']
 
-const emptyDraft: EntryDraft = {
-  patientId: 1,
-  date: toInputDate(appToday),
-  severity: 3,
-  pain: 2,
-  symptoms: ['Enrojecimiento'],
-  triggers: ['Estres'],
-  notes: '',
+function createEmptyDraft(patientId = 1): EntryDraft {
+  return {
+    patientId,
+    date: toInputDate(new Date()),
+    severity: 3,
+    pain: 2,
+    symptoms: ['Enrojecimiento'],
+    triggers: ['Estres'],
+    notes: '',
+  }
 }
 
 const emptyPatientForm: PatientForm = {
@@ -58,12 +102,27 @@ const emptyAuthForm: AuthForm = {
   password: '',
 }
 
-function toInputDate(date: Date) {
-  return date.toISOString().slice(0, 10)
+function toInputDate(date: Date, timeZone = CHILE_TIME_ZONE) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date)
+
+  const year = parts.find((part) => part.type === 'year')?.value ?? '0000'
+  const month = parts.find((part) => part.type === 'month')?.value ?? '01'
+  const day = parts.find((part) => part.type === 'day')?.value ?? '01'
+
+  return `${year}-${month}-${day}`
+}
+
+function parseInputDate(value: string) {
+  return new Date(`${value}T12:00:00`)
 }
 
 function toReadableDate(value: string) {
-  const date = new Date(`${value}T12:00:00`)
+  const date = parseInputDate(value)
   return new Intl.DateTimeFormat('es-CL', {
     day: 'numeric',
     month: 'short',
@@ -72,8 +131,9 @@ function toReadableDate(value: string) {
 }
 
 function buildCalendarDays(selectedDate: string, logs: LogEntry[]) {
-  const year = new Date(`${selectedDate}T12:00:00`).getFullYear()
-  const month = new Date(`${selectedDate}T12:00:00`).getMonth()
+  const selected = parseInputDate(selectedDate)
+  const year = selected.getFullYear()
+  const month = selected.getMonth()
   const firstDay = new Date(year, month, 1)
   const totalDays = new Date(year, month + 1, 0).getDate()
   const offset = firstDay.getDay()
@@ -94,6 +154,643 @@ function buildCalendarDays(selectedDate: string, logs: LogEntry[]) {
   return items
 }
 
+function buildSummaryBars(referenceDate: string, logs: LogEntry[]): SummaryBar[] {
+  const baseDate = parseInputDate(referenceDate)
+  const dayLabels = ['D', 'L', 'M', 'M', 'J', 'V', 'S']
+
+  return Array.from({ length: 7 }, (_, index) => {
+    const dayDate = new Date(baseDate)
+    dayDate.setDate(baseDate.getDate() - (6 - index))
+    const date = toInputDate(dayDate)
+    const dayEntries = logs.filter((entry) => entry.date === date)
+    const events = dayEntries.length
+    const severity = dayEntries.reduce((max, entry) => Math.max(max, entry.severity), 0)
+    const value = events === 0 ? 14 : Math.min(82, 20 + events * 16 + severity * 7)
+
+    return {
+      date,
+      dayLabel: dayLabels[dayDate.getDay()],
+      events,
+      severity,
+      value,
+    }
+  })
+}
+
+function sanitizeTriggerValue(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[áàäâ]/g, 'a')
+    .replace(/[éèëê]/g, 'e')
+    .replace(/[íìïî]/g, 'i')
+    .replace(/[óòöô]/g, 'o')
+    .replace(/[úùüû]/g, 'u')
+    .replace(/ñ/g, 'n')
+}
+
+function detectTriggerSignal(trigger?: string): TriggerSignal | null {
+  const normalized = sanitizeTriggerValue(trigger ?? '')
+
+  if (!normalized) {
+    return null
+  }
+
+  if (
+    ['clima', 'frio', 'calor', 'humedad', 'invierno', 'temperatura', 'viento', 'sol'].some((term) =>
+      normalized.includes(term),
+    )
+  ) {
+    return { key: 'clima', label: 'Clima' }
+  }
+
+  if (['estres', 'ansiedad', 'tension', 'nervios', 'agobio'].some((term) => normalized.includes(term))) {
+    return { key: 'estres', label: 'Estres' }
+  }
+
+  if (
+    ['alergen', 'polvo', 'polen', 'moho', 'mascota', 'perfume', 'fragancia'].some((term) =>
+      normalized.includes(term),
+    )
+  ) {
+    return { key: 'alergenos', label: 'Alergenos' }
+  }
+
+  if (
+    ['producto', 'crema', 'serum', 'maquillaje', 'jabon', 'limpiador', 'protector', 'cosmetico'].some((term) =>
+      normalized.includes(term),
+    )
+  ) {
+    return { key: 'producto', label: 'Nuevo producto' }
+  }
+
+  if (
+    ['sueno', 'insomnio', 'desvelo', 'cansancio', 'fatiga', 'dormi poco', 'mal dormir'].some((term) =>
+      normalized.includes(term),
+    )
+  ) {
+    return { key: 'sueno', label: 'Falta de sueno' }
+  }
+
+  if (
+    ['alcohol', 'vino', 'cerveza', 'trago', 'licor', 'whisky', 'ron', 'pisco', 'champagne'].some((term) =>
+      normalized.includes(term),
+    )
+  ) {
+    return { key: 'alcohol', label: 'Alcohol' }
+  }
+
+  if (
+    ['cafeina', 'cafe', 'mate', 'te', 'energetica', 'bebida energetica', 'red bull'].some((term) =>
+      normalized.includes(term),
+    )
+  ) {
+    return { key: 'cafeina', label: 'Cafeina' }
+  }
+
+  if (['picante', 'aji', 'condimento', 'salsa picante'].some((term) => normalized.includes(term))) {
+    return { key: 'picante', label: 'Picante' }
+  }
+
+  if (
+    ['comida', 'dieta', 'lacteo', 'leche', 'queso', 'gluten', 'azucar', 'marisco', 'fritura', 'chocolate'].some((term) =>
+      normalized.includes(term),
+    )
+  ) {
+    return { key: 'comida', label: 'Comida' }
+  }
+
+  if (['bebida', 'gaseosa', 'jugo', 'refresco'].some((term) => normalized.includes(term))) {
+    return { key: 'bebida', label: 'Bebida' }
+  }
+
+  return null
+}
+
+function buildTriggerRecommendation(trigger?: string) {
+  switch (detectTriggerSignal(trigger)?.key ?? trigger) {
+    case 'clima':
+    case 'Clima':
+      return 'Protege la piel del frio y refuerza la hidratacion antes de salir.'
+    case 'estres':
+    case 'Estres':
+      return 'Combina el registro con pausas cortas para detectar brotes por tension.'
+    case 'alergenos':
+    case 'Alergenos':
+      return 'Revisa exposicion reciente y evita sumar productos nuevos al mismo tiempo.'
+    case 'comida':
+    case 'Dieta':
+    case 'Comida':
+      return 'Anota alimentos recientes para ver si se repite el patron en los proximos dias.'
+    case 'alcohol':
+    case 'Alcohol':
+      return 'Anota cantidad y horario del alcohol para ver si coincide con enrojecimiento, calor o picor posterior.'
+    case 'bebida':
+    case 'Bebida':
+    case 'cafeina':
+    case 'Cafeina':
+      return 'Registra que bebida consumiste y en que cantidad para ver si se relaciona con sensibilidad o deshidratacion.'
+    case 'picante':
+    case 'Picante':
+      return 'Si hubo comida picante, anota cantidad y momento del dia para revisar si se repite el enrojecimiento.'
+    case 'producto':
+    case 'Nuevo producto':
+      return 'Mantén una rutina corta y prueba un cambio por vez.'
+    case 'sueno':
+    case 'Falta de sueno':
+      return 'Prioriza descanso y observa si el picor baja al dia siguiente.'
+    default:
+      return 'Sigue registrando sintomas y contexto para detectar patrones mas claros.'
+  }
+}
+
+function buildTriggerSpecificGuidance(trigger?: string) {
+  const signal = detectTriggerSignal(trigger)
+  const label = signal?.label ?? normalizeTriggerLabel(trigger ?? '')
+
+  switch (signal?.key) {
+    case 'alcohol':
+      return {
+        title: 'Alcohol marcado como posible detonante',
+        body: 'Si hoy consumiste alcohol, conviene registrar cantidad y horario. Asi podemos ver si el enrojecimiento o picor aparecen despues.',
+        reason: 'Patron sensible a alcohol',
+      }
+    case 'comida':
+      return {
+        title: 'Comida bajo observacion',
+        body: 'Anota que alimento estuvo presente hoy. El objetivo es detectar si el brote se repite con la misma comida o combinacion.',
+        reason: 'Patron alimentario en seguimiento',
+      }
+    case 'picante':
+      return {
+        title: 'Picante como posible gatillante',
+        body: 'Si notas calor, ardor o rojez tras comida picante, deja el contexto del plato y la hora. Ese detalle ayuda mucho a detectar repeticiones.',
+        reason: 'Reaccion posible a comida picante',
+      }
+    case 'cafeina':
+      return {
+        title: 'Cafeina en observacion',
+        body: 'Cafe, mate o bebidas energeticas pueden coincidir con sensibilidad o peor descanso. Registra cantidad para comparar con tu piel.',
+        reason: 'Patron de cafeina detectado',
+      }
+    case 'bebida':
+      return {
+        title: 'Bebida marcada en el registro',
+        body: 'Si sospechas de una bebida especifica, dejar el detalle hoy ayudara a validar si vuelve a aparecer junto al brote.',
+        reason: 'Seguimiento de bebida personalizada',
+      }
+    case 'clima':
+      return {
+        title: 'Cambio ambiental en observacion',
+        body: 'Hoy conviene reforzar hidratacion y registrar frio, calor o viento. Los cambios ambientales suelen repetir patron en piel sensible.',
+        reason: 'Clima como detonante recurrente',
+      }
+    case 'sueno':
+      return {
+        title: 'Descanso y piel podrian estar conectados',
+        body: 'Si dormiste mal, deja esa nota hoy. Varias crisis se explican mejor cuando cruzamos sintomas con calidad de sueno.',
+        reason: 'Sueno como factor de riesgo',
+      }
+    case 'estres':
+      return {
+        title: 'Carga emocional detectada',
+        body: 'Si hubo tension o ansiedad, agregar esa nota puede ayudar a explicar por que la piel reacciono mas de lo habitual.',
+        reason: 'Estres con impacto posible',
+      }
+    case 'producto':
+      return {
+        title: 'Nuevo producto bajo revision',
+        body: 'Si estrenaste una crema o limpiador, evita sumar mas cambios hoy. Lo ideal es aislar un solo producto por vez.',
+        reason: 'Producto nuevo en observacion',
+      }
+    case 'alergenos':
+      return {
+        title: 'Posible exposicion a alergeno',
+        body: 'Registra si hubo polvo, polen, perfume o contacto similar. Ese contexto ayuda a anticipar brotes repetidos.',
+        reason: 'Alergenos detectados en el contexto',
+      }
+    default:
+      return {
+        title: label ? `${label} en seguimiento` : 'Detonante en seguimiento',
+        body: 'Sigue dejando contexto en tus registros. Mientras mas claro sea el patron, mejores recomendaciones podremos darte.',
+        reason: 'Seguimiento personalizado',
+      }
+  }
+}
+
+function buildDraftRealtimeSuggestion(draft: EntryDraft) {
+  const primaryTrigger = draft.triggers[0]
+  const guidance = buildTriggerSpecificGuidance(primaryTrigger)
+  const symptom = draft.symptoms[0] ?? 'sensibilidad'
+  const severityNote =
+    draft.severity >= 4
+      ? ' La intensidad esta alta, asi que vale la pena dejar una nota detallada hoy.'
+      : draft.severity <= 1
+        ? ' Aunque se vea leve, igual conviene registrarlo para comparar despues.'
+        : ''
+
+  return {
+    title: guidance.title,
+    body: `${guidance.body} Sintoma principal marcado: ${symptom.toLowerCase()}.${severityNote}`,
+  }
+}
+
+function buildDayInsight(date: string, logs: LogEntry[], reminders: Reminder[]) {
+  const dayEntries = logs.filter((entry) => entry.date === date)
+  const latestDayEntry = dayEntries[0]
+
+  if (!latestDayEntry) {
+    const pendingReminders = reminders.filter((item) => !item.done).length
+    return {
+      label: 'Actividad del dia',
+      title: 'Aun no hay registro para esta fecha',
+      description:
+        pendingReminders > 0
+          ? `Tienes ${pendingReminders} recordatorio${pendingReminders === 1 ? '' : 's'} pendiente${pendingReminders === 1 ? '' : 's'} para empujar el seguimiento.`
+          : 'Toca el boton + para registrar sintomas, mejorias o un cambio de rutina.',
+    }
+  }
+
+  const detectedSymptom = latestDayEntry.symptoms[0] ?? 'sensibilidad'
+  const detectedTrigger = latestDayEntry.triggers[0]
+  const activeTrigger = detectedTrigger
+  const entry = latestDayEntry
+
+  if (latestDayEntry.status === 'Recuperacion') {
+    return {
+      label: 'Mejoria detectada',
+      title: `${detectedSymptom} en descenso`,
+      description: 'Mantén la rutina actual y registra que fue lo que ayudó para repetirlo.',
+    }
+  }
+
+  if (false) {
+    return {
+      label: 'Recomendacion actual',
+      title: 'MantÃ©n estabilidad sin sobrecargar la rutina',
+      body: `${buildTriggerRecommendation(activeTrigger)} MantÃ©n la rutina simple y registra cualquier cambio leve.`,
+      actionLabel: 'Ver calendario',
+      actionPage: 'calendar' as Page,
+      actionDate: entry.date,
+    }
+  }
+
+  if (activeTrigger) {
+    return {
+      label: 'Recomendacion actual',
+      title: 'Manten estabilidad sin sobrecargar la rutina',
+      body: `${buildTriggerRecommendation(activeTrigger)} Manten la rutina simple y registra cualquier cambio leve.`,
+      actionLabel: 'Ver calendario',
+      actionPage: 'calendar' as Page,
+      actionDate: entry.date,
+    }
+  }
+
+  return {
+    label: detectedTrigger ? 'Sintoma detectado' : 'Seguimiento activo',
+    title: detectedTrigger ? `${detectedSymptom} vinculado a ${detectedTrigger.toLowerCase()}` : detectedSymptom,
+    description: buildTriggerRecommendation(detectedTrigger),
+  }
+}
+
+function getHeroState(entry: LogEntry | undefined, todaysEntries: LogEntry[]) {
+  if (!entry) {
+    return {
+      mood: 'neutral',
+      title: 'Aun sin registro para hoy',
+      emoji: ':|',
+      message: 'Haz un registro rapido para que DermaTips pueda mostrar el estado actual con mas precision.',
+      tags: ['Seguimiento', 'Hoy', 'Pendiente'],
+    } as const
+  }
+
+  if (entry.status === 'Brote') {
+    return {
+      mood: 'brote',
+      title: 'Tu piel necesita calma hoy',
+      emoji: ':(',
+      message:
+        todaysEntries.length > 0
+          ? `Detectamos ${todaysEntries.length} registro${todaysEntries.length === 1 ? '' : 's'} hoy con actividad reciente. Conviene observar sintomas y detonantes.`
+          : 'Detectamos actividad reciente. Registra sintomas para encontrar patrones.',
+      tags: ['Crisis', 'Cuidado', 'Observacion'],
+    } as const
+  }
+
+  if (entry.status === 'Recuperacion') {
+    return {
+      mood: 'recovery',
+      title: 'Tu piel muestra mejoria',
+      emoji: ':)',
+      message: 'Se ve una recuperacion en curso. Mantén la rutina que ayudó y sigue registrando avances.',
+      tags: ['Mejoria', 'Rutina', 'Constancia'],
+    } as const
+  }
+
+  return {
+    mood: 'stable',
+    title: 'Tu piel se ve estable',
+    emoji: ':)',
+    message:
+      todaysEntries.length > 0
+        ? `Hoy tienes ${todaysEntries.length} registro${todaysEntries.length === 1 ? '' : 's'} y el seguimiento se ve controlado.`
+        : 'No vemos señales de crisis importantes. Mantén tu rutina y sigue observando cambios leves.',
+    tags: ['Calma', 'Rutina', 'Seguimiento'],
+  } as const
+}
+
+function getLoadingHeroState() {
+  return {
+    mood: 'neutral',
+    title: 'Sincronizando estado actual',
+    emoji: ':|',
+    message: 'Estamos revisando el ultimo registro para mostrar el estado real de la piel.',
+    tags: ['Sincronizando', 'Seguimiento', 'Chile'],
+  } as const
+}
+
+function getDailyRecommendation(
+  entry: LogEntry | undefined,
+  todayKey: string,
+  todaysEntries: LogEntry[],
+  reminders: Reminder[],
+  triggerStats: Array<[string, number]>,
+) {
+  const pendingReminders = reminders.filter((item) => !item.done).length
+  const topTrigger = triggerStats[0]?.[0] ?? entry?.triggers[0] ?? ''
+  const activeTrigger = entry?.triggers[0] ?? topTrigger
+  const activeGuidance = buildTriggerSpecificGuidance(activeTrigger)
+
+  if (!entry || todaysEntries.length === 0) {
+    return {
+      label: 'Recomendacion actual',
+      title: 'Primero registra como está la piel hoy',
+      body: pendingReminders > 0
+        ? `Tienes ${pendingReminders} recordatorio${pendingReminders === 1 ? '' : 's'} pendiente${pendingReminders === 1 ? '' : 's'}. Registra el estado actual para cruzarlo con tu rutina de hoy.`
+        : 'Un registro corto hoy le da contexto real al calendario, a los sintomas y a las recomendaciones.',
+      actionLabel: 'Registrar hoy',
+      actionPage: 'add' as Page,
+      actionDate: todayKey,
+    }
+  }
+
+  if (entry.status === 'Brote') {
+    return {
+      label: 'Recomendacion actual',
+      title: activeGuidance.title,
+      body: `${activeGuidance.body} Hoy conviene registrar sintomas con detalle y evitar cambios bruscos de rutina.`,
+      actionLabel: 'Ver historial',
+      actionPage: 'history' as Page,
+    }
+  }
+
+  if (entry.status === 'Recuperacion') {
+    return {
+      label: 'Recomendacion actual',
+      title: 'Detecta qué ayudó para repetirlo',
+      body: 'La piel muestra mejoria. Aprovecha de dejar una nota sobre productos, clima, descanso o rutina para identificar qué funcionó.',
+      actionLabel: 'Abrir registro',
+      actionPage: 'add' as Page,
+      actionDate: entry.date,
+    }
+  }
+
+  return {
+    label: 'Recomendacion actual',
+    title: 'Mantén estabilidad sin sobrecargar la rutina',
+    body: activeTrigger
+      ? `El seguimiento se ve estable, pero ${topTrigger.toLowerCase()} sigue apareciendo como patron. Mantén la rutina simple y registra cualquier cambio leve.`
+      : 'La piel se ve estable. Mantén constancia en la rutina y registra solo cambios relevantes para no sobrecargar el seguimiento.',
+    actionLabel: 'Ver calendario',
+    actionPage: 'calendar' as Page,
+    actionDate: entry.date,
+  }
+}
+
+function getNotificationStorageKey(userId: string | null) {
+  return `dermatips-notifications-${userId ?? 'guest'}`
+}
+
+function normalizeTriggerLabel(value: string) {
+  return value
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase()
+    .split(' ')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+function differenceInDays(dateA: string, dateB: string) {
+  const left = parseInputDate(dateA).getTime()
+  const right = parseInputDate(dateB).getTime()
+  return Math.round((left - right) / 86400000)
+}
+
+function isChileColdSeason(referenceDate: string) {
+  const month = parseInputDate(referenceDate).getMonth()
+  return month >= 4 && month <= 8
+}
+
+function buildPredictiveInsight(
+  entries: LogEntry[],
+  todayKey: string,
+  triggerStats: Array<[string, number]>,
+): PredictiveInsight {
+  const recentEntries = entries.filter((entry) => differenceInDays(todayKey, entry.date) <= 14)
+  const recentFlareUps = recentEntries.filter((entry) => entry.status === 'Brote')
+  const latestEntry = entries[0]
+  const topTrigger = triggerStats[0]
+  const coldSeason = isChileColdSeason(todayKey)
+  const triggerGuidance = buildTriggerSpecificGuidance(topTrigger?.[0] ?? latestEntry?.triggers[0])
+
+  if (detectTriggerSignal(topTrigger?.[0])?.key === 'clima' && coldSeason) {
+    return {
+      level: recentFlareUps.length >= 2 ? 'high' : 'medium',
+      title: recentFlareUps.length >= 2 ? 'Riesgo alto por clima frio' : 'Atencion al clima frio',
+      description:
+        recentFlareUps.length >= 2
+          ? 'Tus ultimos brotes se repiten en temporada fria. Refuerza hidratacion, evita agua muy caliente y considera adelantar control si la piel escala rapido.'
+          : 'Clima aparece como detonante y estamos en temporada fria de Chile. Hoy conviene proteger barrera cutanea y observar sensibilidad.',
+      reason: 'Patron detectado: clima + estacionalidad',
+      actionLabel: 'Ver historial',
+      actionPage: 'history',
+    }
+  }
+
+  if (recentFlareUps.length >= 2) {
+    return {
+      level: 'high',
+      title: triggerGuidance.title,
+      body: `${triggerGuidance.body} Si este patron se mantiene, puede ser buen momento para contactar a tu medico y revisar tratamiento o detonantes.`,
+      reason: `${triggerGuidance.reason} + frecuencia alta en ultimos 14 dias`,
+      actionLabel: 'Ver historial',
+      actionPage: 'history',
+    }
+  }
+
+  if (latestEntry?.status === 'Brote') {
+    return {
+      level: 'medium',
+      title: triggerGuidance.title,
+      body: `${triggerGuidance.body} Evita sumar muchos cambios el mismo dia hasta estabilizar la piel.`,
+      reason: `${triggerGuidance.reason} + ultimo evento en brote`,
+      actionLabel: 'Registrar hoy',
+      actionPage: 'add',
+    }
+  }
+
+  if (latestEntry?.status === 'Recuperacion') {
+    return {
+      level: 'low',
+      title: 'Momento util para consolidar mejoria',
+      body: 'La piel viene en recuperacion. Mantener constancia y documentar que ayudo puede prevenir la proxima crisis.',
+      reason: 'Recuperacion reciente detectada',
+      actionLabel: 'Ver calendario',
+      actionPage: 'calendar',
+    }
+  }
+
+  return {
+    level: 'low',
+    title: 'Riesgo bajo por ahora',
+    body: topTrigger
+      ? `No vemos una alerta fuerte hoy, pero ${topTrigger[0].toLowerCase()} sigue apareciendo como patron. Mantén observacion ligera.`
+      : 'No vemos señales fuertes de crisis hoy. Sigue con tu rutina y registra cambios relevantes.',
+    reason: 'Seguimiento estable',
+    actionLabel: 'Abrir dashboard',
+    actionPage: 'dashboard',
+  }
+}
+
+function getNotificationSignature(item: NotificationItem) {
+  return [item.title, item.body, item.page, item.date ?? ''].join('|')
+}
+
+function buildNotificationItems(
+  entries: LogEntry[],
+  reminders: Reminder[],
+  todayKey: string,
+  triggerStats: Array<[string, number]>,
+  isOffline: boolean,
+): NotificationItem[] {
+  const items: NotificationItem[] = []
+  const pendingReminders = reminders.filter((item) => !item.done)
+  const latestEntry = entries[0]
+  const todayEntries = entries.filter((entry) => entry.date === todayKey)
+  const recoveringEntry = entries.find((entry) => entry.status === 'Recuperacion')
+  const topTrigger = triggerStats[0]
+  const predictiveInsight = buildPredictiveInsight(entries, todayKey, triggerStats)
+
+  if (isOffline) {
+    items.push({
+      id: 'offline-mode',
+      title: 'Modo offline activo',
+      body: 'Las notificaciones siguen usando datos locales. Cuando vuelva internet, la app retomará sincronización.',
+      page: 'dashboard',
+      date: todayKey,
+    })
+  }
+
+  if (todayEntries.length === 0) {
+    items.push({
+      id: 'today-entry',
+      title: 'Registro pendiente',
+      body: 'Aun no hay un seguimiento para hoy. Registrar el estado actual ayudara al dashboard.',
+      page: 'add',
+      date: todayKey,
+    })
+  }
+
+  if (pendingReminders.length > 0) {
+    items.push({
+      id: 'pending-reminders',
+      title: 'Recordatorios activos',
+      body: `Tienes ${pendingReminders.length} recordatorio${pendingReminders.length === 1 ? '' : 's'} pendiente${pendingReminders.length === 1 ? '' : 's'} por revisar.`,
+      page: 'dashboard',
+    })
+  }
+
+  if (latestEntry?.status === 'Brote') {
+    items.push({
+      id: 'latest-flare',
+      title: 'Brote reciente',
+      body: `Ultimo evento con ${latestEntry.symptoms[0]?.toLowerCase() ?? 'sintomas'} y severidad ${latestEntry.severity}/5.`,
+      page: 'history',
+      date: latestEntry.date,
+    })
+  }
+
+  if (recoveringEntry) {
+    items.push({
+      id: 'recovery',
+      title: 'Mejoria detectada',
+      body: `Se detecto recuperacion el ${toReadableDate(recoveringEntry.date)}. Puede servir revisar que ayudo.`,
+      page: 'history',
+      date: recoveringEntry.date,
+    })
+  }
+
+  if (topTrigger) {
+    items.push({
+      id: 'top-trigger',
+      title: 'Patron detectado',
+      body: `${topTrigger[0]} aparece en ${topTrigger[1]} registro${topTrigger[1] === 1 ? '' : 's'} reciente${topTrigger[1] === 1 ? '' : 's'}.`,
+      page: 'history',
+    })
+  }
+
+  if (predictiveInsight.level !== 'low') {
+    items.push({
+      id: `predictive-${predictiveInsight.level}`,
+      title: predictiveInsight.title,
+      body: predictiveInsight.body,
+      page: predictiveInsight.actionPage,
+      date: todayKey,
+    })
+  }
+
+  if (latestEntry && todayEntries.length > 0) {
+    items.push({
+      id: 'current-state',
+      title: latestEntry.status === 'Brote' ? 'Estado actual sensible' : latestEntry.status === 'Recuperacion' ? 'Estado actual en mejoria' : 'Estado actual estable',
+      body:
+        latestEntry.status === 'Brote'
+          ? `Ultimo registro con severidad ${latestEntry.severity}/5 y ${latestEntry.symptoms[0]?.toLowerCase() ?? 'sintomas'} como señal principal.`
+          : latestEntry.status === 'Recuperacion'
+            ? 'La piel muestra senales de recuperacion. Mantener constancia puede consolidar la mejoria.'
+            : 'No hay alertas fuertes hoy. Mantén la rutina y registra cualquier cambio leve.',
+      page: 'dashboard',
+      date: latestEntry.date,
+    })
+  }
+
+  if (items.length === 0) {
+    items.push({
+      id: 'quiet-day',
+      title: 'Seguimiento tranquilo',
+      body: 'No hay alertas nuevas por ahora. Puedes revisar el calendario o registrar observaciones leves.',
+      page: 'calendar',
+      date: todayKey,
+    })
+  }
+
+  return items.slice(0, 4)
+}
+
+function isSameEntryDraft(entry: LogEntry, draft: EntryDraft) {
+  return (
+    entry.patientId === draft.patientId &&
+    entry.date === draft.date &&
+    entry.severity === draft.severity &&
+    entry.pain === draft.pain &&
+    entry.notes === draft.notes &&
+    entry.symptoms.join('|') === draft.symptoms.join('|') &&
+    entry.triggers.join('|') === draft.triggers.join('|')
+  )
+}
+
 function countActiveDays(logs: LogEntry[]) {
   return new Set(logs.map((entry) => entry.date)).size
 }
@@ -103,7 +800,8 @@ function getTriggerStats(logs: LogEntry[]) {
 
   logs.forEach((entry) => {
     entry.triggers.forEach((trigger) => {
-      counts.set(trigger, (counts.get(trigger) ?? 0) + 1)
+      const groupedTrigger = detectTriggerSignal(trigger)?.label ?? normalizeTriggerLabel(trigger)
+      counts.set(groupedTrigger, (counts.get(groupedTrigger) ?? 0) + 1)
     })
   })
 
@@ -124,10 +822,100 @@ function toPatientForm(patient: Patient | null): PatientForm {
   }
 }
 
+async function toCompressedImageDataUrl(file: File) {
+  const sourceUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result ?? ''))
+    reader.onerror = () => reject(new Error('No pude leer la imagen seleccionada.'))
+    reader.readAsDataURL(file)
+  })
+
+  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const nextImage = new Image()
+    nextImage.onload = () => resolve(nextImage)
+    nextImage.onerror = () => reject(new Error('No pude procesar la imagen seleccionada.'))
+    nextImage.src = sourceUrl
+  })
+
+  const maxDimension = 900
+  const scale = Math.min(1, maxDimension / Math.max(image.width, image.height))
+  const width = Math.max(1, Math.round(image.width * scale))
+  const height = Math.max(1, Math.round(image.height * scale))
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+
+  const context = canvas.getContext('2d')
+
+  if (!context) {
+    throw new Error('No pude preparar la imagen para subirla.')
+  }
+
+  context.drawImage(image, 0, 0, width, height)
+
+  return canvas.toDataURL('image/jpeg', 0.78)
+}
+
+function toFriendlyErrorMessage(error: unknown) {
+  if (!error || typeof error !== 'object') {
+    return 'Ocurrio un error inesperado.'
+  }
+
+  const code = 'code' in error && typeof error.code === 'string' ? error.code : ''
+  const message = 'message' in error && typeof error.message === 'string' ? error.message : ''
+
+  switch (code) {
+    case 'auth/invalid-credential':
+    case 'auth/wrong-password':
+    case 'auth/user-not-found':
+      return 'Correo o contrasena incorrectos.'
+    case 'auth/invalid-email':
+      return 'El correo no tiene un formato valido.'
+    case 'auth/operation-not-allowed':
+      return 'Email/Password no esta habilitado en Firebase Authentication.'
+    case 'auth/too-many-requests':
+      return 'Firebase bloqueo temporalmente el acceso por muchos intentos. Espera un momento.'
+    case 'auth/network-request-failed':
+      return 'No se pudo conectar con Firebase. Revisa tu conexion o la configuracion del proyecto.'
+    case 'auth/popup-closed-by-user':
+      return 'Cerraste la ventana de Google antes de terminar el inicio de sesion.'
+    case 'auth/popup-blocked':
+      return 'El navegador bloqueo la ventana emergente de Google. Permite popups e intenta de nuevo.'
+    case 'storage/unauthorized':
+      return 'Firebase Storage rechazo la subida. Revisa las reglas del bucket.'
+    case 'storage/object-not-found':
+      return 'No encontre el archivo en Firebase Storage.'
+    case 'storage/unknown':
+      return 'Firebase Storage no esta listo todavia. Crea el bucket y prueba nuevamente.'
+    case 'storage/retry-limit-exceeded':
+      return 'La subida de imagen tardo demasiado. Intenta con una foto mas liviana.'
+    case 'drive/config-missing':
+      return 'Falta configurar Google Drive en el archivo .env.local.'
+    case 'drive/access-denied':
+      return 'Tu cuenta de Google no tiene permiso para subir archivos a esa carpeta de Drive.'
+    case 'drive/folder-not-found':
+      return 'No encontre la carpeta configurada de Drive. Revisa el folderId.'
+    case 'drive/authorization-timeout':
+      return 'La autorizacion de Google Drive se interrumpio o tardo demasiado.'
+    case 'drive/unauthorized':
+      return 'Google Drive rechazo la autorizacion. Intenta nuevamente.'
+    case 'drive/upload-failed':
+      return 'No pude subir la imagen a Google Drive.'
+    case 'drive/script-load-failed':
+      return 'No pude cargar el acceso a Google Drive en este navegador.'
+    case 'drive/invalid-image':
+      return 'La imagen seleccionada no se pudo convertir para subir a Drive.'
+    default:
+      return code ? `Firebase devolvio: ${code}` : message || 'Ocurrio un error inesperado.'
+  }
+}
+
 function App() {
+  const todayKey = toInputDate(new Date())
   const [page, setPage] = useState<Page>('dashboard')
-  const [selectedDate, setSelectedDate] = useState(toInputDate(appToday))
-  const [draft, setDraft] = useState<EntryDraft>(emptyDraft)
+  const [selectedDate, setSelectedDate] = useState(todayKey)
+  const [draft, setDraft] = useState<EntryDraft>(() => createEmptyDraft())
+  const [customTriggerInput, setCustomTriggerInput] = useState('')
   const [patientCreateDraft, setPatientCreateDraft] = useState<PatientForm>(emptyPatientForm)
   const [patientEditDraft, setPatientEditDraft] = useState<PatientForm>(emptyPatientForm)
   const [authDraft, setAuthDraft] = useState<AuthForm>(emptyAuthForm)
@@ -138,12 +926,33 @@ function App() {
   const [entries, setEntries] = useState<LogEntry[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
+  const [isPreparingPhoto, setIsPreparingPhoto] = useState(false)
   const [isCreatingPatient, setIsCreatingPatient] = useState(false)
   const [isUpdatingPatient, setIsUpdatingPatient] = useState(false)
   const [isDeletingPatient, setIsDeletingPatient] = useState(false)
   const [isAuthenticating, setIsAuthenticating] = useState(false)
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false)
+  const [seenNotifications, setSeenNotifications] = useState<Record<string, string>>({})
+  const [isOffline, setIsOffline] = useState(() => !window.navigator.onLine)
   const [errorMessage, setErrorMessage] = useState('')
   const isGuestMode = !currentUser
+  const isUploadingEvidence = isSaving && Boolean(draft.photoDataUrl)
+  const isPhotoBusy = isPreparingPhoto || isUploadingEvidence
+  const selectedDateObject = parseInputDate(selectedDate)
+  const calendarMonth = new Date(selectedDateObject.getFullYear(), selectedDateObject.getMonth(), 1)
+  const chileDateLabel = new Intl.DateTimeFormat('es-CL', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    timeZone: CHILE_TIME_ZONE,
+  }).format(new Date())
+  const chileTimeLabel = new Intl.DateTimeFormat('es-CL', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: CHILE_TIME_ZONE,
+    timeZoneName: 'shortOffset',
+  }).format(new Date())
 
   async function loadData(patientId?: number) {
     try {
@@ -156,7 +965,7 @@ function App() {
       setReminders(store.reminders)
       setEntries(store.entries)
       setDraft((current) => ({ ...current, patientId: store.patient.id }))
-      setSelectedDate(store.entries[0]?.date ?? toInputDate(appToday))
+      setSelectedDate(store.entries[0]?.date ?? todayKey)
       setErrorMessage('')
     } catch {
       setErrorMessage('No pude cargar los datos. Revisa tu configuracion de Firebase o tu conexion.')
@@ -169,26 +978,115 @@ function App() {
     void loadData()
   }, [])
 
-  const todaysEntries = entries.filter((entry) => entry.date === toInputDate(appToday))
   const selectedEntries = entries.filter((entry) => entry.date === selectedDate)
   const latestEntry = entries[0]
+  const todaysEntries = entries.filter((entry) => entry.date === todayKey)
+  const currentStatusEntry = todaysEntries[0] ?? latestEntry
   const flareUps = entries.filter((entry) => entry.status === 'Brote').length
   const recoveryScore = Math.max(58, 100 - flareUps * 7 + reminders.filter((item) => item.done).length * 4)
   const consistency = `${countActiveDays(entries)}/30`
   const triggerStats = getTriggerStats(entries)
   const calendarDays = buildCalendarDays(selectedDate, entries)
-  const summaryBars = [
-    { day: 'L', value: 38 },
-    { day: 'M', value: 56 },
-    { day: 'M', value: 42 },
-    { day: 'J', value: 64 },
-    { day: 'V', value: 31 },
-    { day: 'S', value: 26 },
-    { day: 'D', value: 48 },
-  ]
+  const summaryBars = buildSummaryBars(todayKey, entries)
+  const activeSummaryBar = summaryBars.find((item) => item.date === selectedDate) ?? summaryBars.at(-1)
+  const activeDayInsight = buildDayInsight(activeSummaryBar?.date ?? todayKey, entries, reminders)
+  const notificationItems = buildNotificationItems(entries, reminders, todayKey, triggerStats, isOffline)
+  const unreadNotificationItems = notificationItems.filter(
+    (item) => seenNotifications[item.id] !== getNotificationSignature(item),
+  )
+  const heroState = isLoading ? getLoadingHeroState() : getHeroState(currentStatusEntry, todaysEntries)
+  const dailyRecommendation = getDailyRecommendation(currentStatusEntry, todayKey, todaysEntries, reminders, triggerStats)
+  const predictiveInsight = buildPredictiveInsight(entries, todayKey, triggerStats)
+  const draftRealtimeSuggestion = buildDraftRealtimeSuggestion(draft)
+
+  useEffect(() => {
+    function handleOnlineStateChange() {
+      setIsOffline(!window.navigator.onLine)
+    }
+
+    window.addEventListener('online', handleOnlineStateChange)
+    window.addEventListener('offline', handleOnlineStateChange)
+
+    return () => {
+      window.removeEventListener('online', handleOnlineStateChange)
+      window.removeEventListener('offline', handleOnlineStateChange)
+    }
+  }, [])
+
+  useEffect(() => {
+    const storageKey = getNotificationStorageKey(currentUser?.id ?? null)
+
+    try {
+      const saved = window.localStorage.getItem(storageKey)
+      setSeenNotifications(saved ? (JSON.parse(saved) as Record<string, string>) : {})
+    } catch {
+      setSeenNotifications({})
+    }
+  }, [currentUser?.id])
+
+  useEffect(() => {
+    const storageKey = getNotificationStorageKey(currentUser?.id ?? null)
+
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(seenNotifications))
+    } catch {
+      // Ignore localStorage issues in limited browsers.
+    }
+  }, [currentUser?.id, seenNotifications])
 
   async function handlePatientChange(nextPatientId: number) {
     await loadData(nextPatientId)
+  }
+
+  function markNotificationAsSeen(notificationId: string) {
+    const item = notificationItems.find((notification) => notification.id === notificationId)
+
+    if (!item) {
+      return
+    }
+
+    setSeenNotifications((current) => ({
+      ...current,
+      [notificationId]: getNotificationSignature(item),
+    }))
+  }
+
+  function markAllNotificationsAsSeen() {
+    setSeenNotifications((current) =>
+      notificationItems.reduce<Record<string, string>>(
+        (next, item) => ({
+          ...next,
+          [item.id]: getNotificationSignature(item),
+        }),
+        { ...current },
+      ),
+    )
+  }
+
+  function handleNotificationAction(item: NotificationItem) {
+    markNotificationAsSeen(item.id)
+
+    if (item.date) {
+      setSelectedDate(item.date)
+    }
+
+    setPage(item.page)
+    setIsNotificationsOpen(false)
+  }
+
+  function handleRecommendationAction() {
+    if (dailyRecommendation.actionDate) {
+      setSelectedDate(dailyRecommendation.actionDate)
+      setDraft((current) => ({ ...current, date: dailyRecommendation.actionDate! }))
+    }
+
+    setPage(dailyRecommendation.actionPage)
+  }
+
+  function handlePredictiveAction() {
+    setSelectedDate(todayKey)
+    setDraft((current) => ({ ...current, date: todayKey }))
+    setPage(predictiveInsight.actionPage)
   }
 
   async function toggleReminder(reminderId: number) {
@@ -234,6 +1132,27 @@ function App() {
     })
   }
 
+  function addCustomTrigger() {
+    const normalizedTrigger = normalizeTriggerLabel(customTriggerInput)
+
+    if (!normalizedTrigger) {
+      return
+    }
+
+    setDraft((current) => {
+      if (current.triggers.includes(normalizedTrigger)) {
+        return current
+      }
+
+      return {
+        ...current,
+        triggers: [...current.triggers, normalizedTrigger],
+      }
+    })
+
+    setCustomTriggerInput('')
+  }
+
   async function handleSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
@@ -248,17 +1167,68 @@ function App() {
       const savedEntry = await createEntry(draft)
       setEntries((current) => [savedEntry, ...current].sort((left, right) => right.date.localeCompare(left.date)))
       setSelectedDate(savedEntry.date)
-      setDraft((current) => ({ ...emptyDraft, patientId: current.patientId }))
+      setDraft((current) => createEmptyDraft(current.patientId))
+      setCustomTriggerInput('')
       setErrorMessage('')
 
       startTransition(() => {
         setPage('history')
       })
-    } catch {
-      setErrorMessage('No pude guardar el registro. Intenta de nuevo.')
+    } catch (error) {
+      try {
+        const store = await getBootstrapData(draft.patientId)
+        const recoveredEntry = store.entries.find((entry) => isSameEntryDraft(entry, draft))
+
+        if (recoveredEntry) {
+          setCurrentUser(store.currentUser)
+          setPatients(store.patients)
+          setPatient(store.patient)
+          setPatientEditDraft(toPatientForm(store.patient))
+          setReminders(store.reminders)
+          setEntries(store.entries)
+          setSelectedDate(recoveredEntry.date)
+          setDraft((current) => createEmptyDraft(current.patientId))
+          setCustomTriggerInput('')
+          setErrorMessage('El registro se guardo bien, pero la sincronizacion demoro un momento.')
+
+          startTransition(() => {
+            setPage('history')
+          })
+
+          return
+        }
+      } catch {
+        // Ignore fallback sync issues and show the original save error below.
+      }
+
+      setErrorMessage(toFriendlyErrorMessage(error) || 'No pude guardar el registro. Intenta de nuevo.')
     } finally {
       setIsSaving(false)
     }
+  }
+
+  async function handlePhotoChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+
+    if (!file) {
+      return
+    }
+
+    try {
+      setIsPreparingPhoto(true)
+      const photoDataUrl = await toCompressedImageDataUrl(file)
+      setDraft((current) => ({ ...current, photoDataUrl }))
+      setErrorMessage('')
+    } catch (error) {
+      setErrorMessage(toFriendlyErrorMessage(error))
+    } finally {
+      setIsPreparingPhoto(false)
+      event.target.value = ''
+    }
+  }
+
+  function removeDraftPhoto() {
+    setDraft((current) => ({ ...current, photoDataUrl: undefined }))
   }
 
   async function handleCreatePatient(event: FormEvent<HTMLFormElement>) {
@@ -342,8 +1312,8 @@ function App() {
       setAuthDraft(emptyAuthForm)
       await loadData()
       setErrorMessage('')
-    } catch {
-      setErrorMessage('No pude iniciar sesion. Revisa usuario y contrasena.')
+    } catch (error) {
+      setErrorMessage(toFriendlyErrorMessage(error))
     } finally {
       setIsAuthenticating(false)
     }
@@ -357,6 +1327,19 @@ function App() {
       setErrorMessage('')
     } catch {
       setErrorMessage('No pude cerrar sesion ahora mismo.')
+    } finally {
+      setIsAuthenticating(false)
+    }
+  }
+
+  async function handleGoogleLogin() {
+    try {
+      setIsAuthenticating(true)
+      await loginWithGoogle()
+      await loadData()
+      setErrorMessage('')
+    } catch (error) {
+      setErrorMessage(toFriendlyErrorMessage(error))
     } finally {
       setIsAuthenticating(false)
     }
@@ -388,10 +1371,66 @@ function App() {
               <h1>DermaTips</h1>
             </div>
           </div>
-          <button className="icon-button" type="button" aria-label="Notificaciones">
+          <button
+            className={`icon-button ${isNotificationsOpen ? 'active' : ''}`}
+            type="button"
+            aria-label="Notificaciones"
+            onClick={() => setIsNotificationsOpen((current) => !current)}
+          >
             <img alt="" src={bellIcon} />
+            {unreadNotificationItems.length > 0 ? <span className="notification-badge">{unreadNotificationItems.length}</span> : null}
           </button>
         </header>
+
+        <div className="topbar-status">
+          <span className="date-state-chip">Chile · {chileDateLabel}</span>
+          <span className="date-state-chip subtle">{chileTimeLabel}</span>
+          {isOffline ? <span className="date-state-chip offline">Sin internet</span> : null}
+        </div>
+
+        {isNotificationsOpen ? (
+          <section className="panel notification-sheet">
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">Eventos</p>
+                <h3>Notificaciones del seguimiento</h3>
+              </div>
+              <div className="notification-actions">
+                {unreadNotificationItems.length > 0 ? (
+                  <button type="button" onClick={markAllNotificationsAsSeen}>
+                    Marcar vistas
+                  </button>
+                ) : null}
+                <button type="button" onClick={() => setIsNotificationsOpen(false)}>
+                  Cerrar
+                </button>
+              </div>
+            </div>
+            <div className="stack-list">
+              {notificationItems.length > 0 ? (
+                notificationItems.map((item) => (
+                  <button
+                    className={`notification-card ${seenNotifications[item.id] === getNotificationSignature(item) ? 'is-seen' : 'is-unread'}`}
+                    key={item.id}
+                    type="button"
+                    onClick={() => handleNotificationAction(item)}
+                  >
+                    <span className="notification-status">
+                      {seenNotifications[item.id] === getNotificationSignature(item) ? 'Vista' : 'Nueva'}
+                    </span>
+                    <strong>{item.title}</strong>
+                    <p>{item.body}</p>
+                  </button>
+                ))
+              ) : (
+                <div className="empty-state">
+                  <strong>Sin novedades por ahora</strong>
+                  <p>Cuando haya brotes, mejorias o recordatorios, apareceran aqui.</p>
+                </div>
+              )}
+            </div>
+          </section>
+        ) : null}
 
         <section className="screen-content">
           {errorMessage ? <div className="app-alert">{errorMessage}</div> : null}
@@ -427,29 +1466,23 @@ function App() {
                 </div>
               </section>
 
-              <section className="hero-card">
+              <section className={`hero-card hero-${heroState.mood}`}>
                 <div className="hero-illustration">
                   <img alt="Rutina de cuidado facial" src={skincarePortrait} />
                 </div>
                 <div className="hero-copy">
                   <p className="eyebrow">Estado actual</p>
                   <div className="hero-heading">
-                    <h2>
-                      {latestEntry?.status === 'Brote' ? 'Atencion suave hoy' : 'Tu piel se ve calmada'}
-                    </h2>
-                    <div className="status-badge" aria-hidden="true">
-                      {latestEntry?.status === 'Brote' ? ':(' : ':)'}
+                    <h2>{heroState.title}</h2>
+                    <div className={`status-badge mood-${heroState.mood}`} aria-hidden="true">
+                      {heroState.emoji}
                     </div>
                   </div>
-                  <p>
-                    {latestEntry?.status === 'Brote'
-                      ? 'Detectamos actividad reciente. Registra sintomas para encontrar patrones.'
-                      : `Hoy tienes ${todaysEntries.length} registro${todaysEntries.length === 1 ? '' : 's'} y varios dias con mejor control.`}
-                  </p>
+                  <p>{heroState.message}</p>
                   <div className="hero-soft-points">
-                    <span>Calma</span>
-                    <span>Rutina</span>
-                    <span>Seguimiento</span>
+                    {heroState.tags.map((tag) => (
+                      <span key={tag}>{tag}</span>
+                    ))}
                   </div>
                 </div>
               </section>
@@ -509,18 +1542,31 @@ function App() {
 
                 <article className="panel">
                   <div className="panel-header">
-                    <h3>Resumen 7 dias</h3>
+                    <h3>Actividad 7 dias</h3>
                     <button type="button" onClick={() => setPage('history')}>
                       Analisis
                     </button>
                   </div>
                   <div className="chart-card" aria-label="Grafico de actividad semanal">
-                    {summaryBars.map((bar, index) => (
-                      <div className="chart-bar-group" key={`${bar.day}-${index}`}>
+                    {summaryBars.map((bar) => (
+                      <button
+                        className={`chart-bar-group ${bar.date === activeSummaryBar?.date ? 'active' : ''}`}
+                        key={bar.date}
+                        type="button"
+                        onClick={() => {
+                          setSelectedDate(bar.date)
+                          setPage('calendar')
+                        }}
+                      >
                         <div className="chart-bar" style={{ height: `${bar.value}px` }} />
-                        <span>{bar.day}</span>
-                      </div>
+                        <span>{bar.dayLabel}</span>
+                      </button>
                     ))}
+                  </div>
+                  <div className="activity-insight-card">
+                    <p className="eyebrow">{activeDayInsight.label}</p>
+                    <strong>{activeDayInsight.title}</strong>
+                    <p>{activeDayInsight.description}</p>
                   </div>
                 </article>
 
@@ -540,15 +1586,31 @@ function App() {
                   </div>
                 </article>
 
+                <article className={`panel predictive-panel predictive-${predictiveInsight.level}`}>
+                  <p className="tip-label">Lectura predictiva</p>
+                  <div className="predictive-header">
+                    <h3>{predictiveInsight.title}</h3>
+                    <span className={`predictive-pill level-${predictiveInsight.level}`}>
+                      {predictiveInsight.level === 'high'
+                        ? 'Riesgo alto'
+                        : predictiveInsight.level === 'medium'
+                          ? 'Riesgo medio'
+                          : 'Riesgo bajo'}
+                    </span>
+                  </div>
+                  <p>{predictiveInsight.body}</p>
+                  <small>{predictiveInsight.reason}</small>
+                  <button type="button" onClick={handlePredictiveAction}>
+                    {predictiveInsight.actionLabel}
+                  </button>
+                </article>
+
                 <article className="panel tip-panel">
-                  <p className="tip-label">Consejo del dia</p>
-                  <h3>Tu registro debe ayudar, no agobiar</h3>
-                  <p>
-                    Si estas cansado o con dolor, deja una nota corta y vuelve despues. La constancia vale
-                    mas que la perfeccion.
-                  </p>
-                  <button type="button" onClick={() => setPage('profile')}>
-                    Ver recomendacion
+                  <p className="tip-label">{dailyRecommendation.label}</p>
+                  <h3>{dailyRecommendation.title}</h3>
+                  <p>{dailyRecommendation.body}</p>
+                  <button type="button" onClick={handleRecommendationAction}>
+                    {dailyRecommendation.actionLabel}
                   </button>
                 </article>
 
@@ -562,9 +1624,17 @@ function App() {
                   <div className="stack-list">
                     {entries.slice(0, 3).map((entry) => (
                       <article className="log-row" key={entry.id}>
-                        <div
-                          className={`log-thumb severity-${entry.severity >= 4 ? 'high' : entry.severity >= 2 ? 'medium' : 'low'}`}
-                        />
+                        {entry.photoDataUrl ? (
+                          <img
+                            alt={`Registro visual de ${entry.title}`}
+                            className="log-thumb-image"
+                            src={entry.photoDataUrl}
+                          />
+                        ) : (
+                          <div
+                            className={`log-thumb severity-${entry.severity >= 4 ? 'high' : entry.severity >= 2 ? 'medium' : 'low'}`}
+                          />
+                        )}
                         <div className="log-copy">
                           <strong>{entry.title}</strong>
                           <p>{toReadableDate(entry.date)}</p>
@@ -596,8 +1666,9 @@ function App() {
                         year: 'numeric',
                       }).format(calendarMonth)}
                     </h3>
+                    <p className="helper-text calendar-state">Chile · {chileDateLabel} · {chileTimeLabel}</p>
                   </div>
-                  <button type="button" onClick={() => setSelectedDate(toInputDate(appToday))}>
+                  <button type="button" onClick={() => setSelectedDate(todayKey)}>
                     Hoy
                   </button>
                 </div>
@@ -707,7 +1778,7 @@ function App() {
                     <button
                       type="button"
                       onClick={() => {
-                        setDraft({ ...emptyDraft, patientId: patient?.id ?? 1 })
+                        setDraft(createEmptyDraft(patient?.id ?? 1))
                         setPage('dashboard')
                       }}
                     >
@@ -796,16 +1867,103 @@ function App() {
                       </button>
                     ))}
                   </div>
+                  <div className="custom-trigger-row">
+                    <label className="field custom-trigger-field">
+                      <span>Otro detonante</span>
+                      <input
+                        type="text"
+                        value={customTriggerInput}
+                        placeholder="Ej: vino tinto, lacteos, mariscos, polvo..."
+                        onChange={(event) => setCustomTriggerInput(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault()
+                            addCustomTrigger()
+                          }
+                        }}
+                      />
+                    </label>
+                    <button
+                      className="secondary-button custom-trigger-button"
+                      disabled={!normalizeTriggerLabel(customTriggerInput)}
+                      type="button"
+                      onClick={addCustomTrigger}
+                    >
+                      Agregar
+                    </button>
+                  </div>
+                </article>
+
+                <article className="panel live-suggestion-panel">
+                  <p className="tip-label">Sugerencia instantanea</p>
+                  <div className="live-suggestion-header">
+                    <h3>{draftRealtimeSuggestion.title}</h3>
+                    <span className="live-suggestion-pill">En tiempo real</span>
+                  </div>
+                  <p>{draftRealtimeSuggestion.body}</p>
                 </article>
 
                 <article className="panel">
                   <div className="panel-header">
                     <h3>Evidencia visual</h3>
-                    <span className="helper-text">Preview para la V1</span>
+                    <span className="helper-text">
+                      {isPreparingPhoto
+                        ? 'Preparando imagen...'
+                        : isUploadingEvidence
+                          ? 'Subiendo evidencia...'
+                          : 'Sube una foto de referencia'}
+                    </span>
                   </div>
                   <div className="upload-placeholder">
-                    <div className="upload-box">Subir foto</div>
-                    <div className="photo-preview" />
+                    <label className={`upload-box ${isPhotoBusy ? 'is-busy' : ''}`} htmlFor="entry-photo-upload">
+                      <input
+                        accept="image/*"
+                        className="upload-input"
+                        disabled={isPhotoBusy}
+                        id="entry-photo-upload"
+                        type="file"
+                        onChange={(event) => void handlePhotoChange(event)}
+                      />
+                      <span>
+                        {isPreparingPhoto
+                          ? 'Cargando foto...'
+                          : isUploadingEvidence
+                            ? 'Subiendo a Drive...'
+                            : draft.photoDataUrl
+                              ? 'Cambiar foto'
+                              : 'Subir foto'}
+                      </span>
+                    </label>
+                    <div
+                      className={`photo-preview ${draft.photoDataUrl ? 'has-image' : 'is-empty'} ${isPhotoBusy ? 'is-busy' : ''}`}
+                    >
+                      {isPhotoBusy ? (
+                        <div className="photo-loading-indicator" aria-live="polite">
+                          <span className="loading-dot" aria-hidden="true" />
+                          <strong>{isPreparingPhoto ? 'Procesando imagen' : 'Subiendo evidencia'}</strong>
+                          <small>
+                            {isPreparingPhoto
+                              ? 'Optimizando la foto para que cargue rapido.'
+                              : 'Guardando el archivo visual junto al registro.'}
+                          </small>
+                        </div>
+                      ) : null}
+                      {draft.photoDataUrl ? (
+                        <>
+                          <img alt="Preview de evidencia visual" src={draft.photoDataUrl} />
+                          <button
+                            className="photo-remove-button"
+                            disabled={isPhotoBusy}
+                            type="button"
+                            onClick={removeDraftPhoto}
+                          >
+                            Quitar
+                          </button>
+                        </>
+                      ) : (
+                        <span>La imagen quedara asociada a este registro.</span>
+                      )}
+                    </div>
                   </div>
                 </article>
 
@@ -920,6 +2078,11 @@ function App() {
                           </span>
                         ))}
                       </div>
+                      {entry.photoDataUrl ? (
+                        <div className="entry-photo-card">
+                          <img alt={`Evidencia visual de ${entry.title}`} className="entry-photo" src={entry.photoDataUrl} />
+                        </div>
+                      ) : null}
                       <p>{entry.notes}</p>
                     </article>
                   ))}
@@ -950,28 +2113,43 @@ function App() {
                     </button>
                   </div>
                 ) : (
-                  <form className="patient-form" onSubmit={(event) => void handleLogin(event)}>
-                    <label className="field">
-                      <span>Correo electronico</span>
-                      <input
-                        type="email"
-                        value={authDraft.username}
-                        onChange={(event) => setAuthDraft((current) => ({ ...current, username: event.target.value }))}
-                        placeholder="tu-correo@ejemplo.com"
-                      />
-                    </label>
-                    <label className="field">
-                      <span>Contrasena</span>
-                      <input
-                        type="password"
-                        value={authDraft.password}
-                        onChange={(event) => setAuthDraft((current) => ({ ...current, password: event.target.value }))}
-                      />
-                    </label>
-                    <button className="secondary-button" disabled={isAuthenticating} type="submit">
-                      {isAuthenticating ? 'Entrando...' : 'Iniciar sesion'}
+                  <div className="auth-stack">
+                    <button
+                      className="secondary-button google-button"
+                      disabled={isAuthenticating}
+                      type="button"
+                      onClick={() => void handleGoogleLogin()}
+                    >
+                      {isAuthenticating ? 'Conectando...' : 'Continuar con Google'}
                     </button>
-                  </form>
+                    <p className="helper-text auth-divider">o entra con correo y contrasena</p>
+                    <form className="patient-form" onSubmit={(event) => void handleLogin(event)}>
+                      <label className="field">
+                        <span>Correo electronico</span>
+                        <input
+                          type="email"
+                          value={authDraft.username}
+                          onChange={(event) =>
+                            setAuthDraft((current) => ({ ...current, username: event.target.value }))
+                          }
+                          placeholder="tu-correo@ejemplo.com"
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Contrasena</span>
+                        <input
+                          type="password"
+                          value={authDraft.password}
+                          onChange={(event) =>
+                            setAuthDraft((current) => ({ ...current, password: event.target.value }))
+                          }
+                        />
+                      </label>
+                      <button className="secondary-button" disabled={isAuthenticating} type="submit">
+                        {isAuthenticating ? 'Entrando...' : 'Iniciar sesion'}
+                      </button>
+                    </form>
+                  </div>
                 )}
               </article>
 

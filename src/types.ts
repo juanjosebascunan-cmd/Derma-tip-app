@@ -33,6 +33,9 @@ export type LogEntry = {
   symptoms: string[]
   triggers: string[]
   notes: string
+  photoDataUrl?: string
+  photoDriveFileId?: string
+  photoDriveWebViewLink?: string
 }
 
 export type EntryDraft = {
@@ -43,6 +46,7 @@ export type EntryDraft = {
   symptoms: string[]
   triggers: string[]
   notes: string
+  photoDataUrl?: string
 }
 
 export type AppStore = {
