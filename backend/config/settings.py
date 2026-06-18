@@ -14,6 +14,8 @@ DEFAULT_FRONTEND_ORIGINS = ",".join(
     [
         "http://127.0.0.1:5173",
         "http://localhost:5173",
+        "http://localhost",
+        "capacitor://localhost",
         "https://derma-tip-app.vercel.app",
     ]
 )
@@ -115,6 +117,8 @@ FRONTEND_ORIGINS = env_list(
     [
         "http://127.0.0.1:5173",
         "http://localhost:5173",
+        "http://localhost",
+        "capacitor://localhost",
         "https://derma-tip-app.vercel.app",
     ],
 )

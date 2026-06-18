@@ -4,8 +4,8 @@ import {
   createEntry,
   createPatient,
   deletePatient,
+  downloadPatientExport,
   getBootstrapData,
-  getPatientExportUrl,
   login,
   logout,
   updatePatient,
@@ -159,7 +159,7 @@ function App() {
       setSelectedDate(store.entries[0]?.date ?? toInputDate(appToday))
       setErrorMessage('')
     } catch {
-      setErrorMessage('No pude conectar con el backend. Revisa que el servidor este corriendo.')
+      setErrorMessage('No pude cargar los datos. Revisa tu configuracion de Firebase o tu conexion.')
     } finally {
       setIsLoading(false)
     }
@@ -360,6 +360,18 @@ function App() {
     } finally {
       setIsAuthenticating(false)
     }
+  }
+
+  function handleExport() {
+    if (!patient) {
+      setErrorMessage('No hay un paciente activo para exportar.')
+      return
+    }
+
+    downloadPatientExport(
+      patient,
+      entries.filter((entry) => entry.patientId === patient.id),
+    )
   }
 
   return (
@@ -940,11 +952,12 @@ function App() {
                 ) : (
                   <form className="patient-form" onSubmit={(event) => void handleLogin(event)}>
                     <label className="field">
-                      <span>Usuario</span>
+                      <span>Correo electronico</span>
                       <input
-                        type="text"
+                        type="email"
                         value={authDraft.username}
                         onChange={(event) => setAuthDraft((current) => ({ ...current, username: event.target.value }))}
+                        placeholder="tu-correo@ejemplo.com"
                       />
                     </label>
                     <label className="field">
@@ -1150,9 +1163,9 @@ function App() {
                         Descarga un archivo CSV compatible con Excel con el perfil del paciente y todos sus
                         registros guardados.
                       </p>
-                      <a className="secondary-link" href={getPatientExportUrl()}>
+                      <button className="secondary-button" type="button" onClick={handleExport}>
                         Descargar CSV
-                      </a>
+                      </button>
                     </>
                   )}
                 </div>

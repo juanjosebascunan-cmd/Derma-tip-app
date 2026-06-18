@@ -9,6 +9,9 @@
     "dev:server": ".\\.venv\\Scripts\\python backend\\manage.py runserver 127.0.0.1:8000",
     "dev:server:express": "node --watch server/index.js",
     "build": "tsc -b && vite build",
+    "android:add": "npx cap add android",
+    "android:sync": "npx cap sync android",
+    "android:open": "npx cap open android",
     "lint": "eslint .",
     "preview": "vite preview",
     "server": ".\\.venv\\Scripts\\python backend\\manage.py runserver 127.0.0.1:8000",
@@ -17,8 +20,12 @@
     "django:makemigrations": ".\\.venv\\Scripts\\python backend\\manage.py makemigrations"
   },
   "dependencies": {
+    "@capacitor/android": "^8.4.0",
+    "@capacitor/cli": "^8.4.0",
+    "@capacitor/core": "^8.4.0",
     "concurrently": "^10.0.3",
     "express": "^5.2.1",
+    "firebase": "^12.15.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"
   },

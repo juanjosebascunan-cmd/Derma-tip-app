@@ -1,7 +1,7 @@
 export type Page = 'dashboard' | 'calendar' | 'add' | 'history' | 'profile'
 
 export type CurrentUser = {
-  id: number
+  id: string
   username: string
   isStaff: boolean
   isSuperuser: boolean
