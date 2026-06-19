@@ -186,7 +186,7 @@ textarea {
     inset 0 1px 0 rgba(255, 255, 255, 0.72),
     0 12px 24px rgba(194, 114, 126, 0.18);
   overflow: hidden;
-  padding: 11px;
+  padding: 0;
 }
 
 .avatar img {
@@ -518,6 +518,92 @@ textarea {
   align-items: center;
 }
 
+.notification-system-row {
+  display: flex;
+  justify-content: flex-start;
+  margin: 0 0 14px;
+}
+
+.notification-system-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 9px 12px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #fff3ef 0%, #ffe9e3 100%);
+  color: #925761;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.notification-system-chip.is-active {
+  background: linear-gradient(180deg, #f7efe9 0%, #f2e4db 100%);
+  color: #7d5c58;
+}
+
+.notification-system-button {
+  padding: 12px 14px;
+}
+
+.weather-panel.priority-high {
+  background:
+    radial-gradient(circle at 85% 15%, rgba(255, 220, 214, 0.6), transparent 26%),
+    linear-gradient(180deg, #fff7f4 0%, #fff0eb 100%);
+}
+
+.weather-panel.priority-medium {
+  background:
+    radial-gradient(circle at 85% 15%, rgba(255, 236, 216, 0.55), transparent 26%),
+    linear-gradient(180deg, #fff9f5 0%, #fff3ea 100%);
+}
+
+.weather-panel.priority-low {
+  background:
+    radial-gradient(circle at 85% 15%, rgba(246, 232, 224, 0.48), transparent 26%),
+    linear-gradient(180deg, #fffaf8 0%, #fff5f1 100%);
+}
+
+.weather-search-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+
+.weather-search-field {
+  margin: 0;
+}
+
+.weather-search-button {
+  width: 100%;
+}
+
+.weather-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.weather-stat-card {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(185, 126, 126, 0.08);
+}
+
+.weather-stat-card span,
+.weather-stat-card small {
+  color: var(--text-soft);
+}
+
+.weather-stat-card strong {
+  color: var(--text);
+  font-size: 1.15rem;
+  line-height: 1.15;
+}
+
 .notification-card {
   width: 100%;
   border: 1px solid rgba(188, 124, 124, 0.08);
@@ -799,6 +885,13 @@ textarea {
 
 .predictive-panel button {
   margin-top: 12px;
+}
+
+.predictive-action-button {
+  width: fit-content;
+  box-shadow:
+    inset 0 0 0 1px rgba(171, 86, 97, 0.1),
+    0 10px 24px rgba(153, 97, 97, 0.08);
 }
 
 .predictive-pill {
@@ -1347,6 +1440,14 @@ textarea {
   grid-template-columns: 1fr;
 }
 
+.doctor-recipe-form {
+  margin-top: 14px;
+}
+
+.doctor-recipe-list {
+  margin-top: 14px;
+}
+
 .profile-hero {
   display: grid;
   grid-template-columns: 1.1fr 0.9fr;
@@ -1442,6 +1543,10 @@ textarea {
   color: #925761;
   text-decoration: none;
   font-weight: 800;
+}
+
+.entry-evidence-link {
+  margin-top: 10px;
 }
 
 .secondary-button {
@@ -1567,6 +1672,7 @@ textarea {
 
   .quick-actions,
   .stats-grid,
+  .weather-stats-grid,
   .upload-placeholder {
     grid-template-columns: 1fr;
   }

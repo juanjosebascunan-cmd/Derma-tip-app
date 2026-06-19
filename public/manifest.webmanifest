@@ -1,0 +1,17 @@
+{
+  "name": "DermaTips",
+  "short_name": "DermaTips",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fff5f1",
+  "theme_color": "#c56b74",
+  "description": "Seguimiento de piel, crisis, recordatorios y rutina diaria.",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

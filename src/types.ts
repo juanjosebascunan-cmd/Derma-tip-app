@@ -56,3 +56,30 @@ export type AppStore = {
   reminders: Reminder[]
   entries: LogEntry[]
 }
+
+export type WeatherSnapshot = {
+  locationLabel: string
+  latitude: number
+  longitude: number
+  temperature: number
+  apparentTemperature: number
+  humidity: number
+  precipitation: number
+  windSpeed: number
+  weatherCode: number
+  uvIndexMax: number
+  temperatureMax: number
+  temperatureMin: number
+  fetchedAt: string
+}
+
+export type DoctorRecipe = {
+  id: string
+  patientId: number
+  title: string
+  category: 'Rutina AM' | 'Rutina PM' | 'Brote activo' | 'Mantenimiento' | 'Libre'
+  instructions: string
+  schedule: string
+  createdAt: string
+  updatedAt: string
+}

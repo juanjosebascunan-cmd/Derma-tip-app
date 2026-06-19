@@ -16,10 +16,29 @@ import './App.css'
 import flareFigureA from './assets/flare-figure-a.png'
 import flareFigureB from './assets/flare-figure-b.png'
 import bellIcon from './assets/bell-icon.svg'
-import brandMark from './assets/brand-mark.svg'
+import lotusMark from './assets/lotus-mark.png'
 import profileAvatar from './assets/profile-avatar.png'
+import {
+  deleteDoctorRecipe,
+  doctorRecipeTemplates,
+  loadDoctorRecipes,
+  saveDoctorRecipe,
+} from './doctorRecipes'
+import {
+  getSystemNotificationPermission,
+  isSystemNotificationSupported,
+  requestSystemNotificationPermission,
+  showReminderNotification,
+} from './serviceWorker'
 import skincarePortrait from './assets/skincare-portrait.png'
-import type { CurrentUser, EntryDraft, LogEntry, Page, Patient, Reminder } from './types'
+import type { CurrentUser, DoctorRecipe, EntryDraft, LogEntry, Page, Patient, Reminder, WeatherSnapshot } from './types'
+import {
+  buildWeatherSkinAdvice,
+  fetchWeatherSnapshot,
+  getWeatherLabel,
+  searchWeatherLocations,
+  type WeatherLocationCandidate,
+} from './weather'
 
 type PatientForm = {
   fullName: string
@@ -30,6 +49,13 @@ type PatientForm = {
 type AuthForm = {
   username: string
   password: string
+}
+
+type DoctorRecipeForm = {
+  title: string
+  category: DoctorRecipe['category']
+  instructions: string
+  schedule: string
 }
 
 type NotificationItem = {
@@ -100,6 +126,13 @@ const emptyPatientForm: PatientForm = {
 const emptyAuthForm: AuthForm = {
   username: '',
   password: '',
+}
+
+const emptyDoctorRecipeForm: DoctorRecipeForm = {
+  title: '',
+  category: 'Libre',
+  instructions: '',
+  schedule: '',
 }
 
 function toInputDate(date: Date, timeZone = CHILE_TIME_ZONE) {
@@ -395,6 +428,22 @@ function buildDraftRealtimeSuggestion(draft: EntryDraft) {
   }
 }
 
+function getWeatherPriority(snapshot: WeatherSnapshot | null) {
+  if (!snapshot) {
+    return 'low' as const
+  }
+
+  if (snapshot.temperature <= 10 || snapshot.uvIndexMax >= 7 || snapshot.windSpeed >= 24) {
+    return 'high' as const
+  }
+
+  if (snapshot.humidity <= 35 || snapshot.apparentTemperature >= 28 || snapshot.precipitation > 0) {
+    return 'medium' as const
+  }
+
+  return 'low' as const
+}
+
 function buildDayInsight(date: string, logs: LogEntry[], reminders: Reminder[]) {
   const dayEntries = logs.filter((entry) => entry.date === date)
   const latestDayEntry = dayEntries[0]
@@ -571,6 +620,41 @@ function getNotificationStorageKey(userId: string | null) {
   return `dermatips-notifications-${userId ?? 'guest'}`
 }
 
+function getSystemReminderStorageKey(userId: string | null) {
+  return `dermatips-system-reminders-${userId ?? 'guest'}`
+}
+
+function getSystemReminderPreferenceKey(userId: string | null) {
+  return `dermatips-system-reminders-enabled-${userId ?? 'guest'}`
+}
+
+function getWeatherLocationStorageKey(userId: string | null) {
+  return `dermatips-weather-location-${userId ?? 'guest'}`
+}
+
+function getInitialPage() {
+  if (typeof window === 'undefined') {
+    return 'dashboard' as Page
+  }
+
+  const rawPage = new URLSearchParams(window.location.search).get('page')
+
+  if (rawPage === 'dashboard' || rawPage === 'calendar' || rawPage === 'add' || rawPage === 'history' || rawPage === 'profile') {
+    return rawPage
+  }
+
+  return 'dashboard' as Page
+}
+
+function getInitialSelectedDate(fallbackDate: string) {
+  if (typeof window === 'undefined') {
+    return fallbackDate
+  }
+
+  const rawDate = new URLSearchParams(window.location.search).get('date')
+  return rawDate && /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : fallbackDate
+}
+
 function normalizeTriggerLabel(value: string) {
   return value
     .trim()
@@ -609,7 +693,7 @@ function buildPredictiveInsight(
     return {
       level: recentFlareUps.length >= 2 ? 'high' : 'medium',
       title: recentFlareUps.length >= 2 ? 'Riesgo alto por clima frio' : 'Atencion al clima frio',
-      description:
+      body:
         recentFlareUps.length >= 2
           ? 'Tus ultimos brotes se repiten en temporada fria. Refuerza hidratacion, evita agua muy caliente y considera adelantar control si la piel escala rapido.'
           : 'Clima aparece como detonante y estamos en temporada fria de Chile. Hoy conviene proteger barrera cutanea y observar sensibilidad.',
@@ -668,12 +752,117 @@ function getNotificationSignature(item: NotificationItem) {
   return [item.title, item.body, item.page, item.date ?? ''].join('|')
 }
 
+function getChileHour(date: Date) {
+  return Number(
+    new Intl.DateTimeFormat('en-GB', {
+      hour: '2-digit',
+      hour12: false,
+      timeZone: CHILE_TIME_ZONE,
+    }).format(date),
+  )
+}
+
+function getChileMoment(date: Date) {
+  const hour = getChileHour(date)
+
+  if (hour >= 5 && hour < 12) {
+    return 'morning' as const
+  }
+
+  if (hour >= 12 && hour < 18) {
+    return 'afternoon' as const
+  }
+
+  if (hour >= 18 && hour < 23) {
+    return 'evening' as const
+  }
+
+  return 'night' as const
+}
+
+function buildTimeAwareNotification(
+  now: Date,
+  todayKey: string,
+  todayEntries: LogEntry[],
+  latestEntry: LogEntry | undefined,
+  pendingReminders: Reminder[],
+  predictiveInsight: PredictiveInsight,
+  topTrigger?: [string, number],
+): NotificationItem {
+  const moment = getChileMoment(now)
+  const activeTrigger = latestEntry?.triggers[0] ?? topTrigger?.[0]
+  const guidance = buildTriggerSpecificGuidance(activeTrigger)
+  const reminderCount = pendingReminders.length
+
+  if (moment === 'morning') {
+    return {
+      id: `routine-morning-${todayKey}`,
+      title: todayEntries.length === 0 ? 'Rutina de manana pendiente' : 'Manana de cuidado en curso',
+      body:
+        todayEntries.length === 0
+          ? predictiveInsight.level === 'high'
+            ? `${guidance.title}. Antes de salir, limpieza suave, hidratacion y protector para bajar riesgo temprano.`
+            : reminderCount > 0
+              ? `Buen momento para tu skincare de la manana. Tienes ${reminderCount} recordatorio${reminderCount === 1 ? '' : 's'} pendiente${reminderCount === 1 ? '' : 's'}.`
+              : 'Buen momento para tu rutina de skincare. Haz un check-in corto de la piel antes de empezar el dia.'
+          : 'Ya registraste hoy. Mantén la piel protegida durante la mañana y observa cambios tempranos.',
+      page: todayEntries.length === 0 ? 'add' : 'dashboard',
+      date: todayKey,
+    }
+  }
+
+  if (moment === 'afternoon') {
+    return {
+      id: `routine-afternoon-${todayKey}`,
+      title: 'Chequeo de mitad del dia',
+      body:
+        detectTriggerSignal(activeTrigger)?.key === 'comida' ||
+        detectTriggerSignal(activeTrigger)?.key === 'alcohol' ||
+        detectTriggerSignal(activeTrigger)?.key === 'bebida' ||
+        detectTriggerSignal(activeTrigger)?.key === 'picante'
+          ? `${guidance.body} Si hubo almuerzo, snack o bebida distinta hoy, este es buen momento para dejarlo anotado.`
+          : latestEntry?.status === 'Brote'
+            ? 'La piel viene sensible. Revisa roce, sudor, sol o estres acumulado de la tarde y deja una nota si algo empeoro.'
+            : 'Tarde ideal para revisar hidratacion, calor ambiental y pequenas señales antes de que el dia termine.',
+      page: 'add',
+      date: todayKey,
+    }
+  }
+
+  if (moment === 'evening') {
+    return {
+      id: `routine-evening-${todayKey}`,
+      title: 'Cierre de rutina de la tarde',
+      body:
+        latestEntry?.status === 'Recuperacion'
+          ? 'La piel muestra mejoria. Mantén una limpieza suave esta tarde y registra qué ayudó para repetirlo mañana.'
+          : `${guidance.body} Antes de cerrar el dia, conviene dejar un registro corto sobre sintomas, clima y detonantes.`,
+      page: 'add',
+      date: todayKey,
+    }
+  }
+
+  return {
+    id: `routine-night-${todayKey}`,
+    title: 'Hora de descanso reparador',
+    body:
+      detectTriggerSignal(activeTrigger)?.key === 'sueno'
+        ? 'Tu piel podria estar reaccionando al descanso irregular. Intenta bajar pantallas y dejar lista una noche mas reparadora.'
+        : latestEntry?.status === 'Brote'
+          ? 'Si el brote sigue activo de noche, evita friccion, agua muy caliente y deja una nota antes de dormir.'
+          : 'Antes de dormir, deja la piel en calma y anota cualquier cambio del dia. Un mejor descanso tambien ayuda a prevenir crisis.',
+    page: 'dashboard',
+    date: todayKey,
+  }
+}
+
 function buildNotificationItems(
   entries: LogEntry[],
   reminders: Reminder[],
   todayKey: string,
   triggerStats: Array<[string, number]>,
   isOffline: boolean,
+  now: Date,
 ): NotificationItem[] {
   const items: NotificationItem[] = []
   const pendingReminders = reminders.filter((item) => !item.done)
@@ -682,6 +871,8 @@ function buildNotificationItems(
   const recoveringEntry = entries.find((entry) => entry.status === 'Recuperacion')
   const topTrigger = triggerStats[0]
   const predictiveInsight = buildPredictiveInsight(entries, todayKey, triggerStats)
+
+  items.push(buildTimeAwareNotification(now, todayKey, todayEntries, latestEntry, pendingReminders, predictiveInsight, topTrigger))
 
   if (isOffline) {
     items.push({
@@ -776,7 +967,7 @@ function buildNotificationItems(
     })
   }
 
-  return items.slice(0, 4)
+  return items.slice(0, 5)
 }
 
 function isSameEntryDraft(entry: LogEntry, draft: EntryDraft) {
@@ -856,6 +1047,60 @@ async function toCompressedImageDataUrl(file: File) {
   return canvas.toDataURL('image/jpeg', 0.78)
 }
 
+function getDriveThumbnailUrl(fileId: string) {
+  return `https://drive.google.com/thumbnail?id=${encodeURIComponent(fileId)}&sz=w1200`
+}
+
+function getEntryPhotoPreviewUrl(entry: Pick<LogEntry, 'photoDataUrl' | 'photoDriveFileId'>, hasLoadError = false) {
+  if (hasLoadError) {
+    return undefined
+  }
+
+  if (entry.photoDataUrl) {
+    return entry.photoDataUrl
+  }
+
+  if (entry.photoDriveFileId) {
+    return getDriveThumbnailUrl(entry.photoDriveFileId)
+  }
+
+  return undefined
+}
+
+function getEntryEvidenceLink(entry: Pick<LogEntry, 'photoDriveWebViewLink' | 'photoDriveFileId'>) {
+  if (entry.photoDriveWebViewLink) {
+    return entry.photoDriveWebViewLink
+  }
+
+  if (entry.photoDriveFileId) {
+    return `https://drive.google.com/file/d/${encodeURIComponent(entry.photoDriveFileId)}/view`
+  }
+
+  return undefined
+}
+
+function calculateRecoveryScore(logs: LogEntry[], reminders: Reminder[]) {
+  if (logs.length === 0) {
+    return 60
+  }
+
+  const latestEntry = logs[0]
+  const reminderCompletionRatio = reminders.length > 0 ? reminders.filter((item) => item.done).length / reminders.length : 0.5
+  const consistencyBonus = Math.min(12, countActiveDays(logs))
+  const statusBonus =
+    latestEntry.status === 'Recuperacion' ? 8 : latestEntry.status === 'Estable' ? 12 : -8
+  const score =
+    100 -
+    latestEntry.severity * 11 -
+    latestEntry.pain * 9 -
+    latestEntry.symptoms.length * 4 +
+    reminderCompletionRatio * 18 +
+    consistencyBonus +
+    statusBonus
+
+  return Math.max(28, Math.min(100, Math.round(score)))
+}
+
 function toFriendlyErrorMessage(error: unknown) {
   if (!error || typeof error !== 'object') {
     return 'Ocurrio un error inesperado.'
@@ -911,11 +1156,18 @@ function toFriendlyErrorMessage(error: unknown) {
 }
 
 function App() {
-  const todayKey = toInputDate(new Date())
-  const [page, setPage] = useState<Page>('dashboard')
-  const [selectedDate, setSelectedDate] = useState(todayKey)
+  const [now, setNow] = useState(() => new Date())
+  const todayKey = toInputDate(now)
+  const [page, setPage] = useState<Page>(() => getInitialPage())
+  const [selectedDate, setSelectedDate] = useState(() => getInitialSelectedDate(toInputDate(new Date())))
   const [draft, setDraft] = useState<EntryDraft>(() => createEmptyDraft())
   const [customTriggerInput, setCustomTriggerInput] = useState('')
+  const [weatherLocationQuery, setWeatherLocationQuery] = useState('')
+  const [weatherLocation, setWeatherLocation] = useState<WeatherLocationCandidate | null>(null)
+  const [weatherSnapshot, setWeatherSnapshot] = useState<WeatherSnapshot | null>(null)
+  const [isWeatherLoading, setIsWeatherLoading] = useState(false)
+  const [doctorRecipeDraft, setDoctorRecipeDraft] = useState<DoctorRecipeForm>(emptyDoctorRecipeForm)
+  const [doctorRecipes, setDoctorRecipes] = useState<DoctorRecipe[]>([])
   const [patientCreateDraft, setPatientCreateDraft] = useState<PatientForm>(emptyPatientForm)
   const [patientEditDraft, setPatientEditDraft] = useState<PatientForm>(emptyPatientForm)
   const [authDraft, setAuthDraft] = useState<AuthForm>(emptyAuthForm)
@@ -933,8 +1185,14 @@ function App() {
   const [isAuthenticating, setIsAuthenticating] = useState(false)
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false)
   const [seenNotifications, setSeenNotifications] = useState<Record<string, string>>({})
+  const [deliveredSystemNotifications, setDeliveredSystemNotifications] = useState<Record<string, string>>({})
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | 'unsupported'>(() =>
+    getSystemNotificationPermission(),
+  )
+  const [systemRemindersEnabled, setSystemRemindersEnabled] = useState(() => getSystemNotificationPermission() === 'granted')
   const [isOffline, setIsOffline] = useState(() => !window.navigator.onLine)
   const [errorMessage, setErrorMessage] = useState('')
+  const [failedEntryImages, setFailedEntryImages] = useState<Record<number, true>>({})
   const isGuestMode = !currentUser
   const isUploadingEvidence = isSaving && Boolean(draft.photoDataUrl)
   const isPhotoBusy = isPreparingPhoto || isUploadingEvidence
@@ -945,14 +1203,14 @@ function App() {
     day: 'numeric',
     month: 'long',
     timeZone: CHILE_TIME_ZONE,
-  }).format(new Date())
+  }).format(now)
   const chileTimeLabel = new Intl.DateTimeFormat('es-CL', {
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
     timeZone: CHILE_TIME_ZONE,
     timeZoneName: 'shortOffset',
-  }).format(new Date())
+  }).format(now)
 
   async function loadData(patientId?: number) {
     try {
@@ -978,19 +1236,30 @@ function App() {
     void loadData()
   }, [])
 
+  useEffect(() => {
+    const millisecondsToNextMinute =
+      (60 - now.getSeconds()) * 1000 - now.getMilliseconds() + 24
+
+    const timer = window.setTimeout(() => {
+      setNow(new Date())
+    }, Math.max(500, millisecondsToNextMinute))
+
+    return () => window.clearTimeout(timer)
+  }, [now])
+
   const selectedEntries = entries.filter((entry) => entry.date === selectedDate)
   const latestEntry = entries[0]
   const todaysEntries = entries.filter((entry) => entry.date === todayKey)
   const currentStatusEntry = todaysEntries[0] ?? latestEntry
   const flareUps = entries.filter((entry) => entry.status === 'Brote').length
-  const recoveryScore = Math.max(58, 100 - flareUps * 7 + reminders.filter((item) => item.done).length * 4)
+  const recoveryScore = calculateRecoveryScore(entries, reminders)
   const consistency = `${countActiveDays(entries)}/30`
   const triggerStats = getTriggerStats(entries)
   const calendarDays = buildCalendarDays(selectedDate, entries)
   const summaryBars = buildSummaryBars(todayKey, entries)
   const activeSummaryBar = summaryBars.find((item) => item.date === selectedDate) ?? summaryBars.at(-1)
   const activeDayInsight = buildDayInsight(activeSummaryBar?.date ?? todayKey, entries, reminders)
-  const notificationItems = buildNotificationItems(entries, reminders, todayKey, triggerStats, isOffline)
+  const notificationItems = buildNotificationItems(entries, reminders, todayKey, triggerStats, isOffline, now)
   const unreadNotificationItems = notificationItems.filter(
     (item) => seenNotifications[item.id] !== getNotificationSignature(item),
   )
@@ -998,6 +1267,8 @@ function App() {
   const dailyRecommendation = getDailyRecommendation(currentStatusEntry, todayKey, todaysEntries, reminders, triggerStats)
   const predictiveInsight = buildPredictiveInsight(entries, todayKey, triggerStats)
   const draftRealtimeSuggestion = buildDraftRealtimeSuggestion(draft)
+  const weatherAdvice = weatherSnapshot ? buildWeatherSkinAdvice(weatherSnapshot) : ''
+  const weatherPriority = getWeatherPriority(weatherSnapshot)
 
   useEffect(() => {
     function handleOnlineStateChange() {
@@ -1034,8 +1305,302 @@ function App() {
     }
   }, [currentUser?.id, seenNotifications])
 
+  useEffect(() => {
+    const storageKey = getSystemReminderStorageKey(currentUser?.id ?? null)
+    const preferenceKey = getSystemReminderPreferenceKey(currentUser?.id ?? null)
+
+    try {
+      const savedDeliveries = window.localStorage.getItem(storageKey)
+      setDeliveredSystemNotifications(savedDeliveries ? (JSON.parse(savedDeliveries) as Record<string, string>) : {})
+    } catch {
+      setDeliveredSystemNotifications({})
+    }
+
+    try {
+      const savedPreference = window.localStorage.getItem(preferenceKey)
+      setSystemRemindersEnabled(
+        savedPreference === null ? getSystemNotificationPermission() === 'granted' : savedPreference === 'true',
+      )
+    } catch {
+      setSystemRemindersEnabled(getSystemNotificationPermission() === 'granted')
+    }
+  }, [currentUser?.id])
+
+  useEffect(() => {
+    const storageKey = getSystemReminderStorageKey(currentUser?.id ?? null)
+
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(deliveredSystemNotifications))
+    } catch {
+      // Ignore localStorage issues in limited browsers.
+    }
+  }, [currentUser?.id, deliveredSystemNotifications])
+
+  useEffect(() => {
+    const preferenceKey = getSystemReminderPreferenceKey(currentUser?.id ?? null)
+
+    try {
+      window.localStorage.setItem(preferenceKey, String(systemRemindersEnabled))
+    } catch {
+      // Ignore localStorage issues in limited browsers.
+    }
+  }, [currentUser?.id, systemRemindersEnabled])
+
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) {
+      return
+    }
+
+    function handleServiceWorkerMessage(event: MessageEvent) {
+      if (event.data?.type !== 'OPEN_NOTIFICATION_TARGET') {
+        return
+      }
+
+      if (event.data.date) {
+        setSelectedDate(String(event.data.date))
+      }
+
+      if (
+        event.data.page === 'dashboard' ||
+        event.data.page === 'calendar' ||
+        event.data.page === 'add' ||
+        event.data.page === 'history' ||
+        event.data.page === 'profile'
+      ) {
+        setPage(event.data.page)
+      }
+    }
+
+    navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage)
+
+    return () => {
+      navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage)
+    }
+  }, [])
+
+  useEffect(() => {
+    setNotificationPermission(getSystemNotificationPermission())
+  }, [isNotificationsOpen, now])
+
+  useEffect(() => {
+    if (!isSystemNotificationSupported() || notificationPermission !== 'granted' || !systemRemindersEnabled) {
+      return
+    }
+
+    const reminderItem = notificationItems.find((item) => item.id.startsWith('routine-'))
+
+    if (!reminderItem) {
+      return
+    }
+
+    const signature = getNotificationSignature(reminderItem)
+
+    if (deliveredSystemNotifications[reminderItem.id] === signature) {
+      return
+    }
+
+    void showReminderNotification(reminderItem).then((shown) => {
+      if (!shown) {
+        return
+      }
+
+      setDeliveredSystemNotifications((current) => ({
+        ...current,
+        [reminderItem.id]: signature,
+      }))
+    })
+  }, [deliveredSystemNotifications, notificationItems, notificationPermission, systemRemindersEnabled])
+
+  useEffect(() => {
+    if (!patient) {
+      setDoctorRecipes([])
+      return
+    }
+
+    setDoctorRecipes(loadDoctorRecipes(currentUser?.id ?? null, patient.id))
+  }, [currentUser?.id, patient?.id])
+
+  useEffect(() => {
+    const storageKey = getWeatherLocationStorageKey(currentUser?.id ?? null)
+
+    try {
+      const raw = window.localStorage.getItem(storageKey)
+
+      if (!raw) {
+        return
+      }
+
+      const savedLocation = JSON.parse(raw) as WeatherLocationCandidate
+      setWeatherLocation(savedLocation)
+      setWeatherLocationQuery(savedLocation.label)
+    } catch {
+      // Ignore malformed saved location.
+    }
+  }, [currentUser?.id])
+
+  useEffect(() => {
+    if (!weatherLocation) {
+      return
+    }
+
+    const storageKey = getWeatherLocationStorageKey(currentUser?.id ?? null)
+
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(weatherLocation))
+    } catch {
+      // Ignore localStorage issues in limited browsers.
+    }
+  }, [currentUser?.id, weatherLocation])
+
+  useEffect(() => {
+    if (!weatherLocation) {
+      return
+    }
+
+    let cancelled = false
+
+    setIsWeatherLoading(true)
+
+    void fetchWeatherSnapshot(weatherLocation)
+      .then((snapshot) => {
+        if (cancelled) {
+          return
+        }
+
+        setWeatherSnapshot(snapshot)
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setErrorMessage('No pude cargar el clima actual. Intenta de nuevo en un momento.')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsWeatherLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [weatherLocation])
+
   async function handlePatientChange(nextPatientId: number) {
     await loadData(nextPatientId)
+  }
+
+  async function handleWeatherSearch() {
+    const query = weatherLocationQuery.trim()
+
+    if (!query) {
+      setErrorMessage('Escribe una ciudad o comuna para consultar el clima.')
+      return
+    }
+
+    try {
+      setIsWeatherLoading(true)
+      const results = await searchWeatherLocations(query)
+
+      if (results.length === 0) {
+        setErrorMessage('No encontre esa ubicacion. Prueba con otra ciudad o comuna.')
+        return
+      }
+
+      setWeatherLocation(results[0])
+      setErrorMessage('')
+    } catch {
+      setErrorMessage('No pude buscar esa ubicacion climatica ahora mismo.')
+    } finally {
+      setIsWeatherLoading(false)
+    }
+  }
+
+  function handleWeatherUseMyLocation() {
+    if (!('geolocation' in navigator)) {
+      setErrorMessage('Este navegador no permite obtener tu ubicacion.')
+      return
+    }
+
+    setIsWeatherLoading(true)
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const nextLocation = {
+          label: 'Tu ubicacion actual',
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        }
+
+        setWeatherLocation(nextLocation)
+        setWeatherLocationQuery(nextLocation.label)
+        setErrorMessage('')
+        setIsWeatherLoading(false)
+      },
+      () => {
+        setIsWeatherLoading(false)
+        setErrorMessage('No pude acceder a tu ubicacion. Puedes escribir una ciudad manualmente.')
+      },
+      {
+        enableHighAccuracy: false,
+        timeout: 10000,
+      },
+    )
+  }
+
+  function handleSaveDoctorRecipe(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+
+    if (!patient) {
+      setErrorMessage('No hay paciente activo para guardar una receta clinica.')
+      return
+    }
+
+    if (!doctorRecipeDraft.title.trim() || !doctorRecipeDraft.instructions.trim()) {
+      setErrorMessage('Completa al menos el titulo y las indicaciones de la receta.')
+      return
+    }
+
+    const nextRecipes = saveDoctorRecipe(currentUser?.id ?? null, patient.id, doctorRecipeDraft)
+    setDoctorRecipes(nextRecipes)
+    setDoctorRecipeDraft(emptyDoctorRecipeForm)
+    setErrorMessage('')
+  }
+
+  function applyDoctorRecipeTemplate(templateIndex: number) {
+    const template = doctorRecipeTemplates[templateIndex]
+
+    if (!template) {
+      return
+    }
+
+    setDoctorRecipeDraft({
+      title: template.title,
+      category: template.category,
+      instructions: template.instructions,
+      schedule: template.schedule,
+    })
+  }
+
+  function handleDeleteDoctorRecipe(recipeId: string) {
+    if (!patient) {
+      return
+    }
+
+    setDoctorRecipes(deleteDoctorRecipe(currentUser?.id ?? null, patient.id, recipeId))
+  }
+
+  async function handleEnableSystemReminders() {
+    const permission = await requestSystemNotificationPermission()
+    setNotificationPermission(permission)
+
+    if (permission === 'granted') {
+      setSystemRemindersEnabled(true)
+      setErrorMessage('')
+      return
+    }
+
+    setSystemRemindersEnabled(false)
+    setErrorMessage('Activa las notificaciones del navegador para que DermaTips pueda recordarte la rutina.')
   }
 
   function markNotificationAsSeen(notificationId: string) {
@@ -1363,7 +1928,7 @@ function App() {
         <header className="topbar">
           <div className="brand">
             <div className="avatar" aria-hidden="true">
-              <img alt="" src={brandMark} />
+              <img alt="" src={lotusMark} />
             </div>
             <div className="brand-copy">
               <span className="brand-mark">D&amp;T</span>
@@ -1405,6 +1970,17 @@ function App() {
                   Cerrar
                 </button>
               </div>
+            </div>
+            <div className="notification-system-row">
+              {notificationPermission === 'granted' && systemRemindersEnabled ? (
+                <span className="notification-system-chip is-active">Reminders del sistema activos</span>
+              ) : isSystemNotificationSupported() ? (
+                <button className="secondary-button notification-system-button" type="button" onClick={() => void handleEnableSystemReminders()}>
+                  Activar reminders del sistema
+                </button>
+              ) : (
+                <span className="notification-system-chip">Este navegador no soporta reminders del sistema</span>
+              )}
             </div>
             <div className="stack-list">
               {notificationItems.length > 0 ? (
@@ -1586,6 +2162,73 @@ function App() {
                   </div>
                 </article>
 
+                <article className={`panel weather-panel priority-${weatherPriority}`}>
+                  <div className="panel-header">
+                    <div>
+                      <p className="eyebrow">Clima y piel</p>
+                      <h3>{weatherSnapshot ? weatherSnapshot.locationLabel : 'Conectar clima actual'}</h3>
+                    </div>
+                    <button type="button" onClick={() => void handleWeatherSearch()}>
+                      Actualizar
+                    </button>
+                  </div>
+                  <div className="weather-search-row">
+                    <label className="field weather-search-field">
+                      <span>Ciudad o comuna</span>
+                      <input
+                        type="text"
+                        value={weatherLocationQuery}
+                        placeholder="Ej: Santiago, Providencia, Vina del Mar"
+                        onChange={(event) => setWeatherLocationQuery(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault()
+                            void handleWeatherSearch()
+                          }
+                        }}
+                      />
+                    </label>
+                    <button className="secondary-button weather-search-button" disabled={isWeatherLoading} type="button" onClick={() => void handleWeatherSearch()}>
+                      Buscar
+                    </button>
+                    <button className="secondary-button weather-search-button" disabled={isWeatherLoading} type="button" onClick={handleWeatherUseMyLocation}>
+                      Mi ubicacion
+                    </button>
+                  </div>
+                  {weatherSnapshot ? (
+                    <>
+                      <div className="weather-stats-grid">
+                        <div className="weather-stat-card">
+                          <span>Ahora</span>
+                          <strong>{Math.round(weatherSnapshot.temperature)}°</strong>
+                          <small>{getWeatherLabel(weatherSnapshot.weatherCode)}</small>
+                        </div>
+                        <div className="weather-stat-card">
+                          <span>Sensacion</span>
+                          <strong>{Math.round(weatherSnapshot.apparentTemperature)}°</strong>
+                          <small>humedad {weatherSnapshot.humidity}%</small>
+                        </div>
+                        <div className="weather-stat-card">
+                          <span>Hoy</span>
+                          <strong>{Math.round(weatherSnapshot.temperatureMax)}° / {Math.round(weatherSnapshot.temperatureMin)}°</strong>
+                          <small>UV {weatherSnapshot.uvIndexMax.toFixed(1)}</small>
+                        </div>
+                      </div>
+                      <div className="activity-insight-card">
+                        <p className="eyebrow">Lectura ambiental</p>
+                        <strong>{weatherAdvice}</strong>
+                        <p>
+                          Viento {Math.round(weatherSnapshot.windSpeed)} km/h · precipitacion {weatherSnapshot.precipitation.toFixed(1)} mm
+                        </p>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="locked-note">
+                      Busca una ciudad o usa tu ubicacion para cruzar clima y estado de la piel.
+                    </div>
+                  )}
+                </article>
+
                 <article className={`panel predictive-panel predictive-${predictiveInsight.level}`}>
                   <p className="tip-label">Lectura predictiva</p>
                   <div className="predictive-header">
@@ -1600,7 +2243,7 @@ function App() {
                   </div>
                   <p>{predictiveInsight.body}</p>
                   <small>{predictiveInsight.reason}</small>
-                  <button type="button" onClick={handlePredictiveAction}>
+                  <button className="secondary-button predictive-action-button" type="button" onClick={handlePredictiveAction}>
                     {predictiveInsight.actionLabel}
                   </button>
                 </article>
@@ -1624,11 +2267,14 @@ function App() {
                   <div className="stack-list">
                     {entries.slice(0, 3).map((entry) => (
                       <article className="log-row" key={entry.id}>
-                        {entry.photoDataUrl ? (
+                        {getEntryPhotoPreviewUrl(entry, Boolean(failedEntryImages[entry.id])) ? (
                           <img
                             alt={`Registro visual de ${entry.title}`}
                             className="log-thumb-image"
-                            src={entry.photoDataUrl}
+                            onError={() => {
+                              setFailedEntryImages((current) => ({ ...current, [entry.id]: true }))
+                            }}
+                            src={getEntryPhotoPreviewUrl(entry, Boolean(failedEntryImages[entry.id]))}
                           />
                         ) : (
                           <div
@@ -1645,6 +2291,17 @@ function App() {
                               </span>
                             ))}
                           </div>
+                          {!getEntryPhotoPreviewUrl(entry, Boolean(failedEntryImages[entry.id])) &&
+                          getEntryEvidenceLink(entry) ? (
+                            <a
+                              className="secondary-link entry-evidence-link"
+                              href={getEntryEvidenceLink(entry)}
+                              rel="noreferrer"
+                              target="_blank"
+                            >
+                              Abrir evidencia
+                            </a>
+                          ) : null}
                         </div>
                       </article>
                     ))}
@@ -2008,9 +2665,9 @@ function App() {
                     <small>ultimos registros</small>
                   </div>
                   <div className="stat-card accent">
-                    <span>Recovery score</span>
+                    <span>Score de mejoria</span>
                     <strong>{recoveryScore}%</strong>
-                    <small>segun rutina y sintomas</small>
+                    <small>como te sientes hoy + tareas completadas</small>
                   </div>
                   <div className="stat-card soft">
                     <span>Consistencia</span>
@@ -2078,10 +2735,26 @@ function App() {
                           </span>
                         ))}
                       </div>
-                      {entry.photoDataUrl ? (
+                      {getEntryPhotoPreviewUrl(entry, Boolean(failedEntryImages[entry.id])) ? (
                         <div className="entry-photo-card">
-                          <img alt={`Evidencia visual de ${entry.title}`} className="entry-photo" src={entry.photoDataUrl} />
+                          <img
+                            alt={`Evidencia visual de ${entry.title}`}
+                            className="entry-photo"
+                            onError={() => {
+                              setFailedEntryImages((current) => ({ ...current, [entry.id]: true }))
+                            }}
+                            src={getEntryPhotoPreviewUrl(entry, Boolean(failedEntryImages[entry.id]))}
+                          />
                         </div>
+                      ) : getEntryEvidenceLink(entry) ? (
+                        <a
+                          className="secondary-link entry-evidence-link"
+                          href={getEntryEvidenceLink(entry)}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          Ver evidencia en Drive
+                        </a>
                       ) : null}
                       <p>{entry.notes}</p>
                     </article>
@@ -2191,6 +2864,113 @@ function App() {
                     <p>{patient ? `${patient.fullName} - ${patient.condition}` : 'Cargando perfil...'}</p>
                   </div>
                 </div>
+              </article>
+
+              <article className="panel">
+                <div className="panel-header">
+                  <div>
+                    <p className="eyebrow">Recetas para doctores</p>
+                    <h3>Indicaciones clinicas del paciente</h3>
+                  </div>
+                </div>
+                {isGuestMode ? (
+                  <div className="locked-note">
+                    Inicia sesion para guardar indicaciones o recetas clinicas por paciente.
+                  </div>
+                ) : (
+                  <>
+                    <div className="tag-list">
+                      {doctorRecipeTemplates.map((template, index) => (
+                        <button
+                          className="tag tag-button"
+                          key={template.title}
+                          type="button"
+                          onClick={() => applyDoctorRecipeTemplate(index)}
+                        >
+                          {template.title}
+                        </button>
+                      ))}
+                    </div>
+                    <form className="patient-form doctor-recipe-form" onSubmit={handleSaveDoctorRecipe}>
+                      <label className="field">
+                        <span>Titulo</span>
+                        <input
+                          type="text"
+                          value={doctorRecipeDraft.title}
+                          onChange={(event) =>
+                            setDoctorRecipeDraft((current) => ({ ...current, title: event.target.value }))
+                          }
+                          placeholder="Ej: Rutina AM barrera"
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Categoria</span>
+                        <select
+                          value={doctorRecipeDraft.category}
+                          onChange={(event) =>
+                            setDoctorRecipeDraft((current) => ({
+                              ...current,
+                              category: event.target.value as DoctorRecipe['category'],
+                            }))
+                          }
+                        >
+                          <option value="Rutina AM">Rutina AM</option>
+                          <option value="Rutina PM">Rutina PM</option>
+                          <option value="Brote activo">Brote activo</option>
+                          <option value="Mantenimiento">Mantenimiento</option>
+                          <option value="Libre">Libre</option>
+                        </select>
+                      </label>
+                      <label className="field">
+                        <span>Frecuencia / horario</span>
+                        <input
+                          type="text"
+                          value={doctorRecipeDraft.schedule}
+                          onChange={(event) =>
+                            setDoctorRecipeDraft((current) => ({ ...current, schedule: event.target.value }))
+                          }
+                          placeholder="Ej: manana y noche por 14 dias"
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Indicaciones</span>
+                        <textarea
+                          rows={4}
+                          value={doctorRecipeDraft.instructions}
+                          onChange={(event) =>
+                            setDoctorRecipeDraft((current) => ({ ...current, instructions: event.target.value }))
+                          }
+                          placeholder="Escribe la receta o indicacion clinica para este paciente..."
+                        />
+                      </label>
+                      <button className="secondary-button" type="submit">
+                        Guardar receta
+                      </button>
+                    </form>
+                    <div className="stack-list doctor-recipe-list">
+                      {doctorRecipes.length > 0 ? (
+                        doctorRecipes.map((recipe) => (
+                          <article className="detail-card" key={recipe.id}>
+                            <div className="detail-heading">
+                              <div>
+                                <strong>{recipe.title}</strong>
+                                <p>{recipe.category} · {recipe.schedule || 'Sin horario definido'}</p>
+                              </div>
+                              <button type="button" onClick={() => handleDeleteDoctorRecipe(recipe.id)}>
+                                Quitar
+                              </button>
+                            </div>
+                            <p>{recipe.instructions}</p>
+                          </article>
+                        ))
+                      ) : (
+                        <div className="locked-note">
+                          Aun no hay recetas clinicas guardadas para este paciente.
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
               </article>
 
               <article className="panel">
