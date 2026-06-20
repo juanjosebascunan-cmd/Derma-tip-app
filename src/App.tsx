@@ -1,5 +1,6 @@
 import { startTransition, type ChangeEvent, type FormEvent } from 'react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { Capacitor } from '@capacitor/core'
 import {
   createEntry,
   createPatient,
@@ -57,6 +58,19 @@ type DoctorRecipeForm = {
   instructions: string
   schedule: string
 }
+
+type PhotoFlowState = 'idle' | 'opening-camera' | 'opening-gallery' | 'preparing' | 'uploading'
+type DashboardModuleId =
+  | 'patient'
+  | 'hero'
+  | 'actions'
+  | 'reminders'
+  | 'activity'
+  | 'triggers'
+  | 'weather'
+  | 'predictive'
+  | 'recommendation'
+  | 'latest'
 
 type NotificationItem = {
   id: string
@@ -133,6 +147,23 @@ const emptyDoctorRecipeForm: DoctorRecipeForm = {
   category: 'Libre',
   instructions: '',
   schedule: '',
+}
+
+const dashboardModuleLabels: Record<DashboardModuleId, string> = {
+  patient: 'Paciente activo',
+  hero: 'Estado actual',
+  actions: 'Accesos rapidos',
+  reminders: 'Recordatorios',
+  activity: 'Actividad 7 dias',
+  triggers: 'Detonantes',
+  weather: 'Clima y piel',
+  predictive: 'Lectura predictiva',
+  recommendation: 'Recomendacion actual',
+  latest: 'Ultimos registros',
+}
+
+function getDashboardModuleStorageKey(userId: string | null, kind: 'hidden') {
+  return `dermatips.dashboard.${kind}.${userId ?? 'guest'}`
 }
 
 function toInputDate(date: Date, timeZone = CHILE_TIME_ZONE) {
@@ -1156,6 +1187,7 @@ function toFriendlyErrorMessage(error: unknown) {
 }
 
 function App() {
+  const isNativeApp = Capacitor.isNativePlatform()
   const [now, setNow] = useState(() => new Date())
   const todayKey = toInputDate(now)
   const [page, setPage] = useState<Page>(() => getInitialPage())
@@ -1192,10 +1224,15 @@ function App() {
   const [systemRemindersEnabled, setSystemRemindersEnabled] = useState(() => getSystemNotificationPermission() === 'granted')
   const [isOffline, setIsOffline] = useState(() => !window.navigator.onLine)
   const [errorMessage, setErrorMessage] = useState('')
+  const [statusMessage, setStatusMessage] = useState('')
+  const [photoFlowState, setPhotoFlowState] = useState<PhotoFlowState>('idle')
   const [failedEntryImages, setFailedEntryImages] = useState<Record<number, true>>({})
+  const [hiddenDashboardModules, setHiddenDashboardModules] = useState<Record<DashboardModuleId, true>>({} as Record<DashboardModuleId, true>)
+  const galleryInputRef = useRef<HTMLInputElement | null>(null)
+  const cameraInputRef = useRef<HTMLInputElement | null>(null)
   const isGuestMode = !currentUser
-  const isUploadingEvidence = isSaving && Boolean(draft.photoDataUrl)
-  const isPhotoBusy = isPreparingPhoto || isUploadingEvidence
+  const isUploadingEvidence = photoFlowState === 'uploading'
+  const isPhotoBusy = photoFlowState !== 'idle'
   const selectedDateObject = parseInputDate(selectedDate)
   const calendarMonth = new Date(selectedDateObject.getFullYear(), selectedDateObject.getMonth(), 1)
   const chileDateLabel = new Intl.DateTimeFormat('es-CL', {
@@ -1247,6 +1284,29 @@ function App() {
     return () => window.clearTimeout(timer)
   }, [now])
 
+  useEffect(() => {
+    const hiddenStorageKey = getDashboardModuleStorageKey(currentUser?.id ?? null, 'hidden')
+    try {
+      const savedHidden = window.localStorage.getItem(hiddenStorageKey)
+      setHiddenDashboardModules(
+        savedHidden ? (JSON.parse(savedHidden) as Record<DashboardModuleId, true>) : ({} as Record<DashboardModuleId, true>),
+      )
+    } catch {
+      setHiddenDashboardModules({} as Record<DashboardModuleId, true>)
+    }
+
+  }, [currentUser?.id])
+
+  useEffect(() => {
+    const hiddenStorageKey = getDashboardModuleStorageKey(currentUser?.id ?? null, 'hidden')
+
+    try {
+      window.localStorage.setItem(hiddenStorageKey, JSON.stringify(hiddenDashboardModules))
+    } catch {
+      // Ignore localStorage issues in limited browsers.
+    }
+  }, [currentUser?.id, hiddenDashboardModules])
+
   const selectedEntries = entries.filter((entry) => entry.date === selectedDate)
   const latestEntry = entries[0]
   const todaysEntries = entries.filter((entry) => entry.date === todayKey)
@@ -1269,6 +1329,44 @@ function App() {
   const draftRealtimeSuggestion = buildDraftRealtimeSuggestion(draft)
   const weatherAdvice = weatherSnapshot ? buildWeatherSkinAdvice(weatherSnapshot) : ''
   const weatherPriority = getWeatherPriority(weatherSnapshot)
+  const hiddenDashboardModuleEntries = Object.keys(hiddenDashboardModules).map((key) => [
+    key as DashboardModuleId,
+    dashboardModuleLabels[key as DashboardModuleId],
+  ])
+
+  function isDashboardModuleHidden(id: DashboardModuleId) {
+    return Boolean(hiddenDashboardModules[id])
+  }
+
+  function isDashboardModuleCollapsed(_id: DashboardModuleId) {
+    return false
+  }
+
+  function hideDashboardModule(id: DashboardModuleId) {
+    setHiddenDashboardModules((current) => ({ ...current, [id]: true }))
+  }
+
+  function restoreDashboardModule(id: DashboardModuleId) {
+    setHiddenDashboardModules((current) => {
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
+  }
+
+  function restoreAllDashboardModules() {
+    setHiddenDashboardModules({} as Record<DashboardModuleId, true>)
+  }
+
+  function renderDashboardModuleActions(id: DashboardModuleId) {
+    return (
+      <div className="module-toolbar">
+        <button aria-label="Cerrar modulo" className="module-chip-button danger" type="button" onClick={() => hideDashboardModule(id)}>
+          ×
+        </button>
+      </div>
+    )
+  }
 
   useEffect(() => {
     function handleOnlineStateChange() {
@@ -1471,7 +1569,7 @@ function App() {
       })
       .catch(() => {
         if (!cancelled) {
-          setErrorMessage('No pude cargar el clima actual. Intenta de nuevo en un momento.')
+          setWeatherSnapshot(null)
         }
       })
       .finally(() => {
@@ -1493,7 +1591,6 @@ function App() {
     const query = weatherLocationQuery.trim()
 
     if (!query) {
-      setErrorMessage('Escribe una ciudad o comuna para consultar el clima.')
       return
     }
 
@@ -1502,14 +1599,14 @@ function App() {
       const results = await searchWeatherLocations(query)
 
       if (results.length === 0) {
-        setErrorMessage('No encontre esa ubicacion. Prueba con otra ciudad o comuna.')
+        setWeatherSnapshot(null)
         return
       }
 
       setWeatherLocation(results[0])
       setErrorMessage('')
     } catch {
-      setErrorMessage('No pude buscar esa ubicacion climatica ahora mismo.')
+      setWeatherSnapshot(null)
     } finally {
       setIsWeatherLoading(false)
     }
@@ -1517,7 +1614,6 @@ function App() {
 
   function handleWeatherUseMyLocation() {
     if (!('geolocation' in navigator)) {
-      setErrorMessage('Este navegador no permite obtener tu ubicacion.')
       return
     }
 
@@ -1538,7 +1634,6 @@ function App() {
       },
       () => {
         setIsWeatherLoading(false)
-        setErrorMessage('No pude acceder a tu ubicacion. Puedes escribir una ciudad manualmente.')
       },
       {
         enableHighAccuracy: false,
@@ -1723,18 +1818,27 @@ function App() {
 
     if (isGuestMode) {
       setErrorMessage('Inicia sesion para guardar registros en tu cuenta.')
+      setStatusMessage('')
       setPage('profile')
       return
     }
 
     try {
       setIsSaving(true)
-      const savedEntry = await createEntry(draft)
+      setErrorMessage('')
+      setStatusMessage('')
+
+      if (draft.photoDataUrl) {
+        setPhotoFlowState('uploading')
+      }
+
+      const { entry: savedEntry, syncNotice } = await createEntry(draft)
       setEntries((current) => [savedEntry, ...current].sort((left, right) => right.date.localeCompare(left.date)))
       setSelectedDate(savedEntry.date)
       setDraft((current) => createEmptyDraft(current.patientId))
       setCustomTriggerInput('')
       setErrorMessage('')
+      setStatusMessage(syncNotice ?? 'Registro guardado correctamente.')
 
       startTransition(() => {
         setPage('history')
@@ -1754,7 +1858,8 @@ function App() {
           setSelectedDate(recoveredEntry.date)
           setDraft((current) => createEmptyDraft(current.patientId))
           setCustomTriggerInput('')
-          setErrorMessage('El registro se guardo bien, pero la sincronizacion demoro un momento.')
+          setErrorMessage('')
+          setStatusMessage('El registro se guardo bien, pero la sincronizacion demoro un momento.')
 
           startTransition(() => {
             setPage('history')
@@ -1767,33 +1872,60 @@ function App() {
       }
 
       setErrorMessage(toFriendlyErrorMessage(error) || 'No pude guardar el registro. Intenta de nuevo.')
+      setStatusMessage('')
     } finally {
       setIsSaving(false)
+      setPhotoFlowState('idle')
     }
   }
 
-  async function handlePhotoChange(event: ChangeEvent<HTMLInputElement>) {
+  function openPhotoPicker(source: 'camera' | 'gallery') {
+    if (isPhotoBusy) {
+      return
+    }
+
+    setErrorMessage('')
+    setStatusMessage(source === 'camera' ? 'Abriendo camara...' : 'Abriendo galeria...')
+    setPhotoFlowState(source === 'camera' ? 'opening-camera' : 'opening-gallery')
+
+    if (source === 'camera') {
+      cameraInputRef.current?.click()
+      return
+    }
+
+    galleryInputRef.current?.click()
+  }
+
+  async function handlePhotoChange(event: ChangeEvent<HTMLInputElement>, source: 'camera' | 'gallery') {
     const file = event.target.files?.[0]
 
     if (!file) {
+      setPhotoFlowState('idle')
+      setStatusMessage('')
       return
     }
 
     try {
       setIsPreparingPhoto(true)
+      setPhotoFlowState('preparing')
+      setStatusMessage(source === 'camera' ? 'Preparando foto tomada desde camara...' : 'Preparando imagen elegida...')
       const photoDataUrl = await toCompressedImageDataUrl(file)
       setDraft((current) => ({ ...current, photoDataUrl }))
       setErrorMessage('')
+      setStatusMessage('Imagen lista para adjuntar al registro.')
     } catch (error) {
       setErrorMessage(toFriendlyErrorMessage(error))
+      setStatusMessage('')
     } finally {
       setIsPreparingPhoto(false)
+      setPhotoFlowState('idle')
       event.target.value = ''
     }
   }
 
   function removeDraftPhoto() {
     setDraft((current) => ({ ...current, photoDataUrl: undefined }))
+    setStatusMessage('Imagen eliminada del borrador.')
   }
 
   async function handleCreatePatient(event: FormEvent<HTMLFormElement>) {
@@ -1898,6 +2030,11 @@ function App() {
   }
 
   async function handleGoogleLogin() {
+    if (isNativeApp) {
+      setErrorMessage('En la APK, por ahora usa correo y contrasena. El acceso con Google requiere integracion movil nativa.')
+      return
+    }
+
     try {
       setIsAuthenticating(true)
       await loginWithGoogle()
@@ -2010,168 +2147,254 @@ function App() {
 
         <section className="screen-content">
           {errorMessage ? <div className="app-alert">{errorMessage}</div> : null}
+          {!errorMessage && statusMessage ? <div className="app-alert subtle success">{statusMessage}</div> : null}
           {isLoading ? <div className="app-alert subtle">Sincronizando datos del seguimiento...</div> : null}
 
           {page === 'dashboard' ? (
             <>
-              <section className="panel patient-switcher">
-                <div className="panel-header">
-                  <div>
-                    <p className="eyebrow">Paciente activo</p>
-                    <h3>{patient?.fullName ?? 'Cargando paciente'}</h3>
-                  </div>
-                </div>
-                <div className="patient-selector">
-                  <label className="field">
-                    <span>Elegir paciente</span>
-                    <select
-                      value={patient?.id ?? ''}
-                      onChange={(event) => void handlePatientChange(Number(event.target.value))}
-                    >
-                      {patients.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.fullName}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <div className="patient-quick-info">
-                    <strong>{patient?.condition ?? 'Sin condicion'}</strong>
-                    <p>{patient?.notes ?? 'Todavia no hay notas para este paciente.'}</p>
-                  </div>
-                </div>
-              </section>
-
-              <section className={`hero-card hero-${heroState.mood}`}>
-                <div className="hero-illustration">
-                  <img alt="Rutina de cuidado facial" src={skincarePortrait} />
-                </div>
-                <div className="hero-copy">
-                  <p className="eyebrow">Estado actual</p>
-                  <div className="hero-heading">
-                    <h2>{heroState.title}</h2>
-                    <div className={`status-badge mood-${heroState.mood}`} aria-hidden="true">
-                      {heroState.emoji}
+              {!isDashboardModuleHidden('patient') ? (
+                <section className="panel patient-switcher">
+                  <div className="panel-header">
+                    <div>
+                      <p className="eyebrow">Paciente activo</p>
+                      <h3>{patient?.fullName ?? 'Cargando paciente'}</h3>
                     </div>
+                    {renderDashboardModuleActions('patient')}
                   </div>
-                  <p>{heroState.message}</p>
-                  <div className="hero-soft-points">
-                    {heroState.tags.map((tag) => (
-                      <span key={tag}>{tag}</span>
+                  {!isDashboardModuleCollapsed('patient') ? (
+                    <div className="patient-selector">
+                      <label className="field">
+                        <span>Elegir paciente</span>
+                        <select
+                          value={patient?.id ?? ''}
+                          onChange={(event) => void handlePatientChange(Number(event.target.value))}
+                        >
+                          {patients.map((item) => (
+                            <option key={item.id} value={item.id}>
+                              {item.fullName}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="patient-quick-info">
+                        <strong>{patient?.condition ?? 'Sin condicion'}</strong>
+                        <p>{patient?.notes ?? 'Todavia no hay notas para este paciente.'}</p>
+                      </div>
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
+
+              {!isDashboardModuleHidden('hero') ? (
+                <section className={`hero-card hero-${heroState.mood}`}>
+                  <div className="module-floating-toolbar">{renderDashboardModuleActions('hero')}</div>
+                  {!isDashboardModuleCollapsed('hero') ? (
+                    <>
+                      <div className="hero-illustration">
+                        <img alt="Rutina de cuidado facial" src={skincarePortrait} />
+                      </div>
+                      <div className="hero-copy">
+                        <p className="eyebrow">Estado actual</p>
+                        <div className="hero-heading">
+                          <h2>{heroState.title}</h2>
+                          <div className={`status-badge mood-${heroState.mood}`} aria-hidden="true">
+                            {heroState.emoji}
+                          </div>
+                        </div>
+                        <p>{heroState.message}</p>
+                        <div className="hero-soft-points">
+                          {heroState.tags.map((tag) => (
+                            <span key={tag}>{tag}</span>
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="module-collapsed-summary">
+                      <p className="eyebrow">Estado actual</p>
+                      <strong>{heroState.title}</strong>
+                    </div>
+                  )}
+                </section>
+              ) : null}
+
+              {!isDashboardModuleHidden('actions') ? (
+                <section className="dashboard-actions-shell">
+                  <div className="quick-actions-header">
+                    <div>
+                      <p className="eyebrow">Vista modular</p>
+                      <h3>Accesos rapidos</h3>
+                    </div>
+                    {renderDashboardModuleActions('actions')}
+                  </div>
+                  {!isDashboardModuleCollapsed('actions') ? (
+                    <section className="quick-actions" aria-label="Accesos rapidos">
+                      <button
+                        className="action-card primary-action"
+                        disabled={isGuestMode}
+                        type="button"
+                        onClick={() => setPage('add')}
+                      >
+                        <span className="action-icon">+</span>
+                        <strong>{isGuestMode ? 'Inicia sesion para registrar' : 'Registrar brote'}</strong>
+                        <small>
+                          {isGuestMode
+                            ? 'Tus registros privados y persistentes se activan al iniciar sesion.'
+                            : 'Anota sintomas, dolor y detonantes en menos de un minuto.'}
+                        </small>
+                      </button>
+                      <button
+                        className="action-card secondary-action"
+                        type="button"
+                        onClick={() => setPage('calendar')}
+                      >
+                        <span className="action-icon">C</span>
+                        <strong>Ver calendario</strong>
+                        <small>Revisa si las crisis se repiten por fecha o rutina.</small>
+                      </button>
+                    </section>
+                  ) : null}
+                </section>
+              ) : null}
+
+              {hiddenDashboardModuleEntries.length > 0 ? (
+                <section className="panel hidden-modules-panel">
+                  <div className="panel-header">
+                    <div>
+                      <p className="eyebrow">Personalizar vista</p>
+                      <h3>Modulos ocultos</h3>
+                    </div>
+                    <button type="button" onClick={restoreAllDashboardModules}>
+                      Mostrar todos
+                    </button>
+                  </div>
+                  <div className="hidden-modules-list">
+                    {hiddenDashboardModuleEntries.map(([moduleId, label]) => (
+                      <button
+                        className="secondary-button module-restore-button"
+                        key={moduleId}
+                        type="button"
+                        aria-label={`Mostrar ${label}`}
+                        onClick={() => restoreDashboardModule(moduleId as DashboardModuleId)}
+                      >
+                        + {label}
+                      </button>
                     ))}
                   </div>
-                </div>
-              </section>
-
-              <section className="quick-actions" aria-label="Accesos rapidos">
-                <button
-                  className="action-card primary-action"
-                  disabled={isGuestMode}
-                  type="button"
-                  onClick={() => setPage('add')}
-                >
-                  <span className="action-icon">+</span>
-                  <strong>{isGuestMode ? 'Inicia sesion para registrar' : 'Registrar brote'}</strong>
-                  <small>
-                    {isGuestMode
-                      ? 'Tus registros privados y persistentes se activan al iniciar sesion.'
-                      : 'Anota sintomas, dolor y detonantes en menos de un minuto.'}
-                  </small>
-                </button>
-                <button
-                  className="action-card secondary-action"
-                  type="button"
-                  onClick={() => setPage('calendar')}
-                >
-                  <span className="action-icon">C</span>
-                  <strong>Ver calendario</strong>
-                  <small>Revisa si las crisis se repiten por fecha o rutina.</small>
-                </button>
-              </section>
+                </section>
+              ) : null}
 
               <section className="content-grid">
+                {!isDashboardModuleHidden('reminders') ? (
                 <article className="panel">
                   <div className="panel-header">
                     <h3>Recordatorios</h3>
-                    <button type="button" onClick={() => setPage('profile')}>
-                      Ajustes
-                    </button>
-                  </div>
-                  <div className="stack-list">
-                    {reminders.map((item) => (
-                      <button
-                        className={`reminder-row ${item.done ? 'is-done' : ''}`}
-                        disabled={isGuestMode}
-                        key={item.id}
-                        type="button"
-                        onClick={() => void toggleReminder(item.id)}
-                      >
-                        <div>
-                          <strong>{item.title}</strong>
-                          <p>{item.detail}</p>
-                        </div>
-                        <span>{item.done ? 'Listo' : 'Pendiente'}</span>
+                    <div className="panel-header-actions">
+                      <button type="button" onClick={() => setPage('profile')}>
+                        Ajustes
                       </button>
-                    ))}
+                      {renderDashboardModuleActions('reminders')}
+                    </div>
                   </div>
+                  {!isDashboardModuleCollapsed('reminders') ? (
+                    <div className="stack-list">
+                      {reminders.map((item) => (
+                        <button
+                          className={`reminder-row ${item.done ? 'is-done' : ''}`}
+                          disabled={isGuestMode}
+                          key={item.id}
+                          type="button"
+                          onClick={() => void toggleReminder(item.id)}
+                        >
+                          <div>
+                            <strong>{item.title}</strong>
+                            <p>{item.detail}</p>
+                          </div>
+                          <span>{item.done ? 'Listo' : 'Pendiente'}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                 </article>
+                ) : null}
 
+                {!isDashboardModuleHidden('activity') ? (
                 <article className="panel">
                   <div className="panel-header">
                     <h3>Actividad 7 dias</h3>
-                    <button type="button" onClick={() => setPage('history')}>
-                      Analisis
-                    </button>
-                  </div>
-                  <div className="chart-card" aria-label="Grafico de actividad semanal">
-                    {summaryBars.map((bar) => (
-                      <button
-                        className={`chart-bar-group ${bar.date === activeSummaryBar?.date ? 'active' : ''}`}
-                        key={bar.date}
-                        type="button"
-                        onClick={() => {
-                          setSelectedDate(bar.date)
-                          setPage('calendar')
-                        }}
-                      >
-                        <div className="chart-bar" style={{ height: `${bar.value}px` }} />
-                        <span>{bar.dayLabel}</span>
+                    <div className="panel-header-actions">
+                      <button type="button" onClick={() => setPage('history')}>
+                        Analisis
                       </button>
-                    ))}
+                      {renderDashboardModuleActions('activity')}
+                    </div>
                   </div>
-                  <div className="activity-insight-card">
-                    <p className="eyebrow">{activeDayInsight.label}</p>
-                    <strong>{activeDayInsight.title}</strong>
-                    <p>{activeDayInsight.description}</p>
-                  </div>
+                  {!isDashboardModuleCollapsed('activity') ? (
+                    <>
+                      <div className="chart-card" aria-label="Grafico de actividad semanal">
+                        {summaryBars.map((bar) => (
+                          <button
+                            className={`chart-bar-group ${bar.date === activeSummaryBar?.date ? 'active' : ''}`}
+                            key={bar.date}
+                            type="button"
+                            onClick={() => {
+                              setSelectedDate(bar.date)
+                              setPage('calendar')
+                            }}
+                          >
+                            <div className="chart-bar" style={{ height: `${bar.value}px` }} />
+                            <span>{bar.dayLabel}</span>
+                          </button>
+                        ))}
+                      </div>
+                      <div className="activity-insight-card">
+                        <p className="eyebrow">{activeDayInsight.label}</p>
+                        <strong>{activeDayInsight.title}</strong>
+                        <p>{activeDayInsight.description}</p>
+                      </div>
+                    </>
+                  ) : null}
                 </article>
+                ) : null}
 
+                {!isDashboardModuleHidden('triggers') ? (
                 <article className="panel">
                   <div className="panel-header">
                     <h3>Posibles detonantes</h3>
-                    <button type="button" onClick={() => setPage('add')}>
-                      Editar
-                    </button>
+                    <div className="panel-header-actions">
+                      <button type="button" onClick={() => setPage('add')}>
+                        Editar
+                      </button>
+                      {renderDashboardModuleActions('triggers')}
+                    </div>
                   </div>
-                  <div className="tag-list">
-                    {triggerStats.map(([trigger]) => (
-                      <span className="tag" key={trigger}>
-                        {trigger}
-                      </span>
-                    ))}
-                  </div>
+                  {!isDashboardModuleCollapsed('triggers') ? (
+                    <div className="tag-list">
+                      {triggerStats.map(([trigger]) => (
+                        <span className="tag" key={trigger}>
+                          {trigger}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
                 </article>
+                ) : null}
 
-                <article className={`panel weather-panel priority-${weatherPriority}`}>
+                {!isDashboardModuleHidden('weather') ? <article className={`panel weather-panel priority-${weatherPriority}`}>
                   <div className="panel-header">
                     <div>
                       <p className="eyebrow">Clima y piel</p>
                       <h3>{weatherSnapshot ? weatherSnapshot.locationLabel : 'Conectar clima actual'}</h3>
                     </div>
-                    <button type="button" onClick={() => void handleWeatherSearch()}>
-                      Actualizar
-                    </button>
+                    <div className="panel-header-actions">
+                      <button type="button" onClick={() => void handleWeatherSearch()}>
+                        Actualizar
+                      </button>
+                      {renderDashboardModuleActions('weather')}
+                    </div>
                   </div>
+                  {!isDashboardModuleCollapsed('weather') ? (
+                    <>
                   <div className="weather-search-row">
                     <label className="field weather-search-field">
                       <span>Ciudad o comuna</span>
@@ -2227,43 +2450,65 @@ function App() {
                       Busca una ciudad o usa tu ubicacion para cruzar clima y estado de la piel.
                     </div>
                   )}
-                </article>
+                    </>
+                  ) : null}
+                </article> : null}
 
-                <article className={`panel predictive-panel predictive-${predictiveInsight.level}`}>
+                {!isDashboardModuleHidden('predictive') ? <article className={`panel predictive-panel predictive-${predictiveInsight.level}`}>
                   <p className="tip-label">Lectura predictiva</p>
-                  <div className="predictive-header">
+                  <div className="predictive-header with-module-actions">
                     <h3>{predictiveInsight.title}</h3>
-                    <span className={`predictive-pill level-${predictiveInsight.level}`}>
-                      {predictiveInsight.level === 'high'
-                        ? 'Riesgo alto'
-                        : predictiveInsight.level === 'medium'
-                          ? 'Riesgo medio'
-                          : 'Riesgo bajo'}
-                    </span>
+                    <div className="predictive-header-right">
+                      <span className={`predictive-pill level-${predictiveInsight.level}`}>
+                        {predictiveInsight.level === 'high'
+                          ? 'Riesgo alto'
+                          : predictiveInsight.level === 'medium'
+                            ? 'Riesgo medio'
+                            : 'Riesgo bajo'}
+                      </span>
+                      {renderDashboardModuleActions('predictive')}
+                    </div>
                   </div>
-                  <p>{predictiveInsight.body}</p>
-                  <small>{predictiveInsight.reason}</small>
-                  <button className="secondary-button predictive-action-button" type="button" onClick={handlePredictiveAction}>
-                    {predictiveInsight.actionLabel}
-                  </button>
-                </article>
+                  {!isDashboardModuleCollapsed('predictive') ? (
+                    <>
+                      <p>{predictiveInsight.body}</p>
+                      <small>{predictiveInsight.reason}</small>
+                      <button className="secondary-button predictive-action-button" type="button" onClick={handlePredictiveAction}>
+                        {predictiveInsight.actionLabel}
+                      </button>
+                    </>
+                  ) : null}
+                </article> : null}
 
-                <article className="panel tip-panel">
+                {!isDashboardModuleHidden('recommendation') ? <article className="panel tip-panel">
                   <p className="tip-label">{dailyRecommendation.label}</p>
-                  <h3>{dailyRecommendation.title}</h3>
-                  <p>{dailyRecommendation.body}</p>
-                  <button type="button" onClick={handleRecommendationAction}>
-                    {dailyRecommendation.actionLabel}
-                  </button>
-                </article>
+                  <div className="panel-header-actions module-inline-actions">
+                    {renderDashboardModuleActions('recommendation')}
+                  </div>
+                  {!isDashboardModuleCollapsed('recommendation') ? (
+                    <>
+                      <h3>{dailyRecommendation.title}</h3>
+                      <p>{dailyRecommendation.body}</p>
+                      <button type="button" onClick={handleRecommendationAction}>
+                        {dailyRecommendation.actionLabel}
+                      </button>
+                    </>
+                  ) : (
+                    <strong>{dailyRecommendation.title}</strong>
+                  )}
+                </article> : null}
 
-                <article className="panel full-width">
+                {!isDashboardModuleHidden('latest') ? <article className="panel full-width">
                   <div className="panel-header">
                     <h3>Ultimos registros</h3>
-                    <button type="button" onClick={() => setPage('history')}>
-                      Historial
-                    </button>
+                    <div className="panel-header-actions">
+                      <button type="button" onClick={() => setPage('history')}>
+                        Historial
+                      </button>
+                      {renderDashboardModuleActions('latest')}
+                    </div>
                   </div>
+                  {!isDashboardModuleCollapsed('latest') ? (
                   <div className="stack-list">
                     {entries.slice(0, 3).map((entry) => (
                       <article className="log-row" key={entry.id}>
@@ -2306,7 +2551,8 @@ function App() {
                       </article>
                     ))}
                   </div>
-                </article>
+                  ) : null}
+                </article> : null}
               </section>
             </>
           ) : null}
@@ -2564,33 +2810,63 @@ function App() {
                   <div className="panel-header">
                     <h3>Evidencia visual</h3>
                     <span className="helper-text">
-                      {isPreparingPhoto
-                        ? 'Preparando imagen...'
-                        : isUploadingEvidence
-                          ? 'Subiendo evidencia...'
-                          : 'Sube una foto de referencia'}
+                      {photoFlowState === 'opening-camera'
+                        ? 'Abriendo camara...'
+                        : photoFlowState === 'opening-gallery'
+                          ? 'Abriendo galeria...'
+                          : isPreparingPhoto
+                            ? 'Preparando imagen...'
+                            : isUploadingEvidence
+                              ? 'Subiendo evidencia...'
+                              : 'Sube una foto de referencia'}
                     </span>
                   </div>
+                  <input
+                    accept="image/*"
+                    capture="environment"
+                    className="native-upload-input"
+                    disabled={isPhotoBusy}
+                    ref={cameraInputRef}
+                    type="file"
+                    onChange={(event) => void handlePhotoChange(event, 'camera')}
+                  />
+                  <input
+                    accept="image/*"
+                    className="native-upload-input"
+                    disabled={isPhotoBusy}
+                    ref={galleryInputRef}
+                    type="file"
+                    onChange={(event) => void handlePhotoChange(event, 'gallery')}
+                  />
                   <div className="upload-placeholder">
-                    <label className={`upload-box ${isPhotoBusy ? 'is-busy' : ''}`} htmlFor="entry-photo-upload">
-                      <input
-                        accept="image/*"
-                        className="upload-input"
-                        disabled={isPhotoBusy}
-                        id="entry-photo-upload"
-                        type="file"
-                        onChange={(event) => void handlePhotoChange(event)}
-                      />
+                    <button
+                      className={`upload-box ${isPhotoBusy ? 'is-busy' : ''}`}
+                      disabled={isPhotoBusy}
+                      type="button"
+                      onClick={() => openPhotoPicker('camera')}
+                    >
                       <span>
-                        {isPreparingPhoto
-                          ? 'Cargando foto...'
-                          : isUploadingEvidence
-                            ? 'Subiendo a Drive...'
-                            : draft.photoDataUrl
-                              ? 'Cambiar foto'
-                              : 'Subir foto'}
+                        {photoFlowState === 'opening-camera'
+                          ? 'Abriendo camara...'
+                          : draft.photoDataUrl
+                            ? 'Tomar otra foto'
+                            : 'Tomar foto'}
                       </span>
-                    </label>
+                    </button>
+                    <button
+                      className={`upload-box ${isPhotoBusy ? 'is-busy' : ''}`}
+                      disabled={isPhotoBusy}
+                      type="button"
+                      onClick={() => openPhotoPicker('gallery')}
+                    >
+                      <span>
+                        {photoFlowState === 'opening-gallery'
+                          ? 'Abriendo galeria...'
+                          : draft.photoDataUrl
+                            ? 'Elegir otra imagen'
+                            : 'Elegir desde galeria'}
+                      </span>
+                    </button>
                     <div
                       className={`photo-preview ${draft.photoDataUrl ? 'has-image' : 'is-empty'} ${isPhotoBusy ? 'is-busy' : ''}`}
                     >
@@ -2622,6 +2898,9 @@ function App() {
                       )}
                     </div>
                   </div>
+                  <p className="helper-text media-permission-hint">
+                    Si es tu primera vez, tu telefono puede pedir permiso para usar camara o acceder a tus fotos.
+                  </p>
                 </article>
 
                 <article className="panel">
@@ -2787,15 +3066,24 @@ function App() {
                   </div>
                 ) : (
                   <div className="auth-stack">
-                    <button
-                      className="secondary-button google-button"
-                      disabled={isAuthenticating}
-                      type="button"
-                      onClick={() => void handleGoogleLogin()}
-                    >
-                      {isAuthenticating ? 'Conectando...' : 'Continuar con Google'}
-                    </button>
-                    <p className="helper-text auth-divider">o entra con correo y contrasena</p>
+                    {isNativeApp ? (
+                      <div className="locked-note">
+                        En la APK, el acceso estable por ahora es con correo y contrasena. Google login y numero de
+                        celular los dejaremos para una integracion movil segura en la siguiente etapa.
+                      </div>
+                    ) : (
+                      <>
+                        <button
+                          className="secondary-button google-button"
+                          disabled={isAuthenticating}
+                          type="button"
+                          onClick={() => void handleGoogleLogin()}
+                        >
+                          {isAuthenticating ? 'Conectando...' : 'Continuar con Google'}
+                        </button>
+                        <p className="helper-text auth-divider">o entra con correo y contrasena</p>
+                      </>
+                    )}
                     <form className="patient-form" onSubmit={(event) => void handleLogin(event)}>
                       <label className="field">
                         <span>Correo electronico</span>
@@ -2822,6 +3110,10 @@ function App() {
                         {isAuthenticating ? 'Entrando...' : 'Iniciar sesion'}
                       </button>
                     </form>
+                    <div className="locked-note">
+                      Ingreso por celular: buena opcion para la app. El siguiente paso seria activarlo con Firebase
+                      Phone Auth y validacion segura para Android.
+                    </div>
                   </div>
                 )}
               </article>

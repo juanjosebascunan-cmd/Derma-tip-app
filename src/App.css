@@ -120,6 +120,12 @@ textarea {
   color: #927278;
 }
 
+.app-alert.success {
+  background: #eef8f1;
+  color: #4f7860;
+  border-color: rgba(98, 149, 115, 0.12);
+}
+
 .topbar,
 .panel-header,
 .hero-heading,
@@ -146,6 +152,15 @@ textarea {
 .trigger-bar-copy,
 .active-patient-chip {
   justify-content: space-between;
+}
+
+.panel-header-actions,
+.module-toolbar,
+.predictive-header-right,
+.quick-actions-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .brand {
@@ -497,6 +512,105 @@ textarea {
 
 .content-grid {
   margin-top: 18px;
+}
+
+.dashboard-actions-shell {
+  margin-top: 18px;
+}
+
+.quick-actions-header {
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.hidden-modules-panel {
+  margin-top: 18px;
+}
+
+.hidden-modules-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.module-restore-button {
+  padding-inline: 14px;
+}
+
+.module-toolbar {
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  opacity: 0.08;
+  transform: scale(0.92);
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease,
+    background 160ms ease;
+}
+
+.module-chip-button {
+  border: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  padding: 0;
+  background: rgba(255, 247, 244, 0.94);
+  color: #915b63;
+  font-size: 0.94rem;
+  line-height: 1;
+  font-weight: 800;
+  display: grid;
+  place-items: center;
+  box-shadow:
+    inset 0 0 0 1px rgba(185, 126, 126, 0.08),
+    0 6px 12px rgba(171, 104, 104, 0.08);
+}
+
+.module-chip-button.danger {
+  color: #99535c;
+  background: rgba(255, 240, 236, 0.96);
+}
+
+.module-floating-toolbar {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+}
+
+.module-collapsed-summary {
+  display: grid;
+  gap: 6px;
+  padding-right: 110px;
+}
+
+.module-inline-actions {
+  justify-content: flex-end;
+  margin-bottom: 6px;
+}
+
+.panel:hover .module-toolbar,
+.panel:focus-within .module-toolbar,
+.hero-card:hover .module-toolbar,
+.hero-card:focus-within .module-toolbar,
+.dashboard-actions-shell:hover .module-toolbar,
+.dashboard-actions-shell:focus-within .module-toolbar {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.module-chip-button:hover,
+.module-chip-button:focus-visible,
+.module-chip-button:active {
+  background: rgba(255, 232, 227, 0.98);
+  color: #8a4f59;
+}
+
+@media (hover: none) {
+  .module-toolbar {
+    opacity: 0.82;
+    transform: scale(1);
+  }
 }
 
 .single-column {
@@ -1194,6 +1308,7 @@ textarea {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
+  align-items: stretch;
 }
 
 .upload-box,
@@ -1203,17 +1318,32 @@ textarea {
 }
 
 .upload-box {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  padding: 16px;
   position: relative;
   border: 1.5px dashed rgba(175, 101, 101, 0.35);
+  border-radius: 20px;
   color: #8c5b62;
   background: linear-gradient(180deg, #fffdfc 0%, #fff4f1 100%);
   font-weight: 800;
   cursor: pointer;
+  text-align: center;
 }
 
 .upload-box.is-busy {
   opacity: 0.82;
   cursor: wait;
+}
+
+.photo-preview {
+  grid-column: 1 / -1;
+}
+
+.native-upload-input {
+  display: none;
 }
 
 .photo-preview {
@@ -1251,6 +1381,10 @@ textarea {
 
 .photo-preview.has-image {
   background: #f8e8e2;
+}
+
+.media-permission-hint {
+  margin-top: 10px;
 }
 
 .photo-preview img,

@@ -185,6 +185,10 @@ function sortEntries(left: LogEntry, right: LogEntry) {
   return right.date.localeCompare(left.date) || right.id - left.id
 }
 
+function isDriveError(error: unknown) {
+  return error instanceof Error && error.message.startsWith('drive/')
+}
+
 function sanitizePatient(data: Record<string, unknown>): Patient {
   return {
     id: Number(data.id),
@@ -382,17 +386,28 @@ export async function createEntry(entry: EntryDraft) {
   let photoDataUrl: string | undefined
   let photoDriveFileId: string | undefined
   let photoDriveWebViewLink: string | undefined
+  let syncNotice: string | undefined
 
   if (entry.photoDataUrl) {
-    const extension = entry.photoDataUrl.startsWith('data:image/png') ? 'png' : 'jpg'
-    const uploadedPhoto = await uploadImageToGoogleDrive({
-      dataUrl: entry.photoDataUrl,
-      fileName: `dermatips-${user.uid}-${entry.patientId}-${entryId}.${extension}`,
-    })
-
     photoDataUrl = entry.photoDataUrl
-    photoDriveFileId = uploadedPhoto.fileId
-    photoDriveWebViewLink = uploadedPhoto.webViewLink
+
+    try {
+      const extension = entry.photoDataUrl.startsWith('data:image/png') ? 'png' : 'jpg'
+      const uploadedPhoto = await uploadImageToGoogleDrive({
+        dataUrl: entry.photoDataUrl,
+        fileName: `dermatips-${user.uid}-${entry.patientId}-${entryId}.${extension}`,
+      })
+
+      photoDriveFileId = uploadedPhoto.fileId
+      photoDriveWebViewLink = uploadedPhoto.webViewLink
+    } catch (error) {
+      if (!isDriveError(error)) {
+        throw error
+      }
+
+      syncNotice =
+        'La imagen quedo adjunta al registro. Drive no respondio ahora, pero el seguimiento se guardo igual.'
+    }
   }
 
   const payload: LogEntry = {
@@ -431,7 +446,7 @@ export async function createEntry(entry: EntryDraft) {
 
   await addDoc(collection(db!, 'entries'), firestorePayload)
 
-  return payload
+  return { entry: payload, syncNotice }
 }
 
 export async function createPatient(payload: { fullName: string; condition: string; notes: string }) {
